@@ -1,89 +1,59 @@
-import pandas as pd
+"""Cleaning of the tipping-bucket precipitation records.
+
+TippingBucket_prec() performs the full TB cleaning; the shipped files in
+data/Cleaned/TB were produced by this cleaning chain.
+
+Copyright (c) 2026 A. Kwadijk, Utrecht University. Licensed under CC BY 4.0.
+"""
 import numpy as np
-import matplotlib.pyplot as plt
-from Data_overview_plot import read_rainfall_TB, read_temp_TB, get_dir, get_measurement
-from Data_overview_plot import get_elevation
-from Corrections_pluvio import get_Pluvio_temp
-from AWS import get_aws_df_temp
-from Snowamp import get_SNOWAMP_df_temp
-import os
 import pandas as pd
-
-# This script is used to process and analyze data from tipping bucket rain gauges and temperature sensors.
-# It includes functions to read data, clean it, and plot the results. The script also includes a function to calculate the temperature gradient based on elevation.
-# The data is resampled to specified (dt) intervals, and various corrections are applied to the data based on specific conditions.
-# The script also includes functions to merge datasets, calculate rainfall events, and rank rainfall events based on their intensity and duration.
-# Snow is removed from the data based on temperature thresholds.
-# Cleaned data is saved to CSV files in ../data/Cleaned/TB
-def get_TB_df_temp(dt='0.25h'):
-    station_names = ['Shalbachum TB Temp','Morimoto TB Temp','Ganja La TB3 Temp', 'Ganja La TB2 Temp', 'Ganja La TB1 Temp', 'Langshisha BC TB Temp']
+import matplotlib.pyplot as plt
+import os
+from station_data import (get_dir, get_elevation, get_measurement,
+                          read_rainfall_TB, _DATA_DIR)
+from clean_temperature import (get_TB_df_temp, get_Pluvio_temp,
+                               get_aws_df_temp, get_SNOWAMP_df_temp)
 
 
-    dirs= get_dir(station_names)
-    all_merged_dfs = {}
+def merge_datasets_hourly(dt='0.25h'):    
 
-    # Loop again to process data and plot
-    for (file_path, TB_name) in zip(dirs, station_names):  # TB_name is unchanged here
+    all_merged_dfs = get_TB_df_temp(dt)
+    
+    # Get pluvio data
+    df_pluvio = get_Pluvio_temp()
+    all_merged_dfs.update(df_pluvio)
 
-        # Use temp_file_path_map to get the correct temperature file path for the station
-        df_TB_T = read_temp_TB(file_path)
-        # Convert datetime columns
-        df_TB_T['DATETIME'] = pd.to_datetime(df_TB_T['DATETIME'])
-        df_TB_T = df_TB_T.resample(dt, on='DATETIME').mean().reset_index() 
+    # Get AWS data
+    df_aws=get_aws_df_temp()
+    all_merged_dfs.update(df_aws)
 
-
-#Clean the dataset from outliers/invalid data/low diurnal temperature fluctuations due to the insulating effects of snow     
-        if TB_name == 'Ganja La TB1 Temp':
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2015-02-25') & (df_TB_T['DATETIME'] <= '2015-03-09'), 'TEMP'] = np.nan
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2015-02-25') & (df_TB_T['DATETIME'] <= '2015-06-07'), 'TEMP'] = np.nan
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2019-02-06') & (df_TB_T['DATETIME'] <= '2019-04-03'), 'TEMP'] = np.nan
-
-        if TB_name == 'Ganja La TB3 Temp':
-            df_TB_T.loc[df_TB_T['DATETIME'] >= '2021-11-10 07:00', 'TEMP'] = np.nan
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2019-02-06') & (df_TB_T['DATETIME'] <= '2019-04-28'), 'TEMP'] = np.nan
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2014-12-31') & (df_TB_T['DATETIME'] <= '2015-05-19'), 'TEMP'] = np.nan
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2021-11-10'), 'TEMP'] = np.nan
-        
-        if TB_name == 'Morimoto TB Temp':
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2015-02-28') & (df_TB_T['DATETIME'] <= '2015-03-12'), 'TEMP'] = np.nan
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2019-02-25') & (df_TB_T['DATETIME'] <= '2019-03-10'), 'TEMP'] = np.nan
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2024-11-02', 'TEMP')] = np.nan
-
-        if TB_name == 'Shalbachum TB Temp':
-            df_TB_T.loc[(df_TB_T['DATETIME'] < '2013-10-26 17:00', 'TEMP')] = np.nan
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2015-02-25') & (df_TB_T['DATETIME'] <= '2015-04-01'), 'TEMP'] = np.nan
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2019-02-06') & (df_TB_T['DATETIME'] <= '2019-04-03'), 'TEMP'] = np.nan
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2023-11-03', 'TEMP')] = np.nan
-
-        if TB_name == 'Langshisha BC TB Temp':
-            df_TB_T.loc[(df_TB_T['DATETIME'] >= '2015-02-25') & (df_TB_T['DATETIME'] <= '2015-03-06'), 'TEMP'] = np.nan
+    include_snowamp = True
+    if include_snowamp ==True:
+        df_SNOWAMP = get_SNOWAMP_df_temp()
+        all_merged_dfs.update(df_SNOWAMP)
 
 
-        # Append df_TB_T to a dictionary for later use
-        all_merged_dfs[TB_name] = df_TB_T
+     # Make sure average temperature for every hours
+    for station, df in all_merged_dfs.items():
+        if df.index.name == 'DATETIME':             #Still need to fix DATETIME column and set it as index in all dataframes
+            df = df.reset_index()
+        df[dt] = df['DATETIME'].dt.floor(dt)
+        avg_temp_h = df.groupby(dt)['TEMP'].mean().reset_index()
+        avg_temp_h = avg_temp_h.rename(columns={'TEMP': 'Avg_Temp_H'})
+        df = pd.merge(df, avg_temp_h, on=dt, how='left')
+        all_merged_dfs[station] = df
+    
+    # Ensure that the 1H periods are aligned across all stations
+    common_H = pd.date_range(start='2012-01-01', end='2026-12-01', freq=dt)
+
+    # Reindex each station's DataFrame to the common 1H periods, filling missing periods with NaN
+    for station in all_merged_dfs.keys():
+        all_merged_dfs[station] = all_merged_dfs[station].drop_duplicates(subset=dt).set_index(dt).reindex(common_H).reset_index()
 
 
-        # Interpolate to fill gaps larger than the resampling period 'dt'
-        df_TB_T = df_TB_T.set_index('DATETIME')
-        # Calculate the time difference between consecutive rows
-        time_diffs = df_TB_T.index.to_series().diff()
-        # Identify gaps larger than the expected frequency
-        resampling_freq = pd.to_timedelta(dt)
-        gaps = time_diffs > resampling_freq
-        
-        # If there are gaps, interpolate them
-        if gaps.any():
-            # Reindex to create the missing timestamps and then interpolate
-            # This ensures that interpolation happens only across the identified gaps
-            df_TB_T = df_TB_T.reindex(pd.date_range(start=df_TB_T.index.min(), end=df_TB_T.index.max(), freq=dt)).interpolate(method='linear')
-        
-        df_TB_T = df_TB_T.reset_index().rename(columns={'index': 'DATETIME'})
-        # Ensure that the data ranges from 2012-01 up to 2025-01
-        common_range = pd.date_range(start='2012-01-01', end='2026-01-01', freq=dt)
-        df_TB_T = df_TB_T.set_index('DATETIME').reindex(common_range).reset_index().rename(columns={'index': 'DATETIME'})
 
+    #all_merged_dfs = all_merged_dfs.reindex(common_H)
     return all_merged_dfs
-
 
 
 def get_TB_rain(dt='0.25h'):
@@ -145,51 +115,6 @@ def get_TB_rain(dt='0.25h'):
     
 
     
-    return all_merged_dfs
-
-
-
-
-def merge_datasets_hourly(dt='0.25h'):    
-
-    all_merged_dfs = get_TB_df_temp(dt)
-    
-    #station_name_pluvio = ['Yala Pluvio']
-
-    # Get pluvio data
-    df_pluvio = get_Pluvio_temp()
-    all_merged_dfs.update(df_pluvio)
-
-    # Get AWS data
-    df_aws=get_aws_df_temp()
-    all_merged_dfs.update(df_aws)
-
-    include_snowamp = True
-    if include_snowamp ==True:
-        df_SNOWAMP = get_SNOWAMP_df_temp()
-        all_merged_dfs.update(df_SNOWAMP)
-
-
-     # Make sure average temperature for every hours
-    for station, df in all_merged_dfs.items():
-        if df.index.name == 'DATETIME':             #Still need to fix DATETIME column and set it as index in all dataframes
-            df = df.reset_index()
-        df[dt] = df['DATETIME'].dt.floor(dt)
-        avg_temp_h = df.groupby(dt)['TEMP'].mean().reset_index()
-        avg_temp_h = avg_temp_h.rename(columns={'TEMP': 'Avg_Temp_H'})
-        df = pd.merge(df, avg_temp_h, on=dt, how='left')
-        all_merged_dfs[station] = df
-    
-    # Ensure that the 1H periods are aligned across all stations
-    common_H = pd.date_range(start='2012-01-01', end='2026-12-01', freq=dt)
-
-    # Reindex each station's DataFrame to the common 1H periods, filling missing periods with NaN
-    for station in all_merged_dfs.keys():
-        all_merged_dfs[station] = all_merged_dfs[station].drop_duplicates(subset=dt).set_index(dt).reindex(common_H).reset_index()
-
-
-
-    #all_merged_dfs = all_merged_dfs.reindex(common_H)
     return all_merged_dfs
 
 
@@ -472,7 +397,7 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
                 (df.index <= '2019-10-09')
             )
             before2 = df.loc[mask2, 'Hourly_Rain'].notna().sum()
-            df.loc[mask2, 'Hourly_Rain'] = np.nan
+            df.loc[mask2, 'Hourly_Rain'] = np.nan        
             after2 = df.loc[mask2, 'Hourly_Rain'].notna().sum()
             if before2 == after2:
                 print(f"Removal not done for {station} (2019-04-18 to 2019-10-09)")
@@ -572,7 +497,7 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
         # I removed the data for Shalbachum from 2018 onward. When looking at the cumulative plot
         # A clear change in slope is visible from 2018 onward. To me this indicates that the station is not working
         # properly anymore
-        if station == 'Shalbachum TB': 
+        if station == 'Shalbachum TB':
             mask1 = (
                 (df.index >= '2018-09-21') &
                 (df.index < '2024-11-30')
@@ -688,7 +613,7 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
             station_name = station
 
             # Read the TEST2.txt file and extract the 'Data gap' column
-            test_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'Data_overview', 'TEST2.txt')
+            test_file_path = str(_DATA_DIR / 'Data_overview' / 'TEST2.txt')
             with open(test_file_path, 'r') as file:
                 lines = file.readlines()
                 data_gap_line = next((line for line in lines if station_name in line and 'Data gap' in line), None)
@@ -723,3 +648,9 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
         
 
     return tipping_buckets
+
+
+if __name__ == '__main__':
+    # Runs the TB precipitation cleaning (update_csv=True additionally writes
+    # the cleaned files;
+    TippingBucket_prec(update_csv=True, dt='0.25h')

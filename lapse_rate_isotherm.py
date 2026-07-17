@@ -1,77 +1,26 @@
-import os
-import pandas as pd
+"""Hourly temperature interpolation over elevation: lapse rate and 0/1 degC
+isotherm elevations, computed from the merged temperature dataset
+(data/Cleaned/Temperature/temp_merged_dfs.pkl).
+
+Note: the shipped data/LapseRate/lapse_rate.csv and
+data/Zero_isotherm/zero_isotherm.csv are the authoritative versions (their
+final to_csv calls were executed interactively); this script recomputes the
+same quantities but does not overwrite them.
+
+Copyright (c) 2026 A. Kwadijk, Utrecht University. Licensed under CC BY 4.0.
+"""
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-from Data_overview_plot import get_elevation
-from Corrections_pluvio import get_Pluvio_temp
-from AWS import get_aws_df_temp
-from Snowamp import get_SNOWAMP_df_temp
-from Snowamp import get_SNOWAMP_df_temp
-from TippingBucket import get_TB_df_temp
 import pickle
-import os
+from station_data import get_elevation, _DATA_DIR
 
 
-
-def merge_datasets_hourly():    
-
-    all_merged_dfs = get_TB_df_temp()
-    
-    #station_name_pluvio = ['Yala Pluvio']
-
-    # Get pluvio data
-    all_merged_dfs = get_Pluvio_temp()
-    #all_merged_dfs.update(df_pluvio)
-
-    # Get AWS data
-    df_aws=get_aws_df_temp()
-    all_merged_dfs.update(df_aws)
-
-    include_snowamp = True
-    if include_snowamp ==True:
-        df_SNOWAMP = get_SNOWAMP_df_temp()
-        all_merged_dfs.update(df_SNOWAMP)
+def load_temp_merged():
+    with open(_DATA_DIR / 'Cleaned' / 'Temperature' / 'temp_merged_dfs.pkl', 'rb') as f:
+        return pickle.load(f)
 
 
-    # Make sure average temperature for every hour
-    for station, df in all_merged_dfs.items():
-        if 'DATETIME' in df.columns:
-            df.set_index('DATETIME', inplace=True)
-        df['h'] = df.index.floor('h')
-        avg_temp_h = df.groupby('h')['TEMP'].mean().reset_index()
-        avg_temp_h = avg_temp_h.rename(columns={'TEMP': 'Avg_Temp_H'})
-        df = pd.merge(df, avg_temp_h, on='h', how='left')
-        all_merged_dfs[station] = df
-    
-    # Ensure that the 1H periods are aligned across all stations
-    common_H = pd.date_range(start='2012-01-01', end='2024-12-01', freq='h')
-
-    # Reindex each station's DataFrame to the common 1H periods, keeping missing values as NaN
-    for station in all_merged_dfs.keys():
-        all_merged_dfs[station] = all_merged_dfs[station].drop_duplicates(subset='h').set_index('h').reindex(common_H)
-
-    # Save temperature data to CSV files
-    output_dir = r'../data/Cleaned/Temperature'
-    
-    # Create directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Save each station's data to a separate CSV file
-    for station, df in all_merged_dfs.items():
-        output_path = os.path.join(output_dir, f'{station}_temperature.csv')
-        df.to_csv(output_path)
-        print(f"Saved temperature data for {station} to {output_path}")
-    
-    return all_merged_dfs
-# merge_datasets_hourly()
-# # # # Save temp_merged_dfs to a pickle file
-# with open(r'../data/temp_merged_dfs.pkl', 'wb') as f:
-#     pickle.dump(temp_merged_dfs, f)
-
-# Load temp_merged_dfs from the pickle file
-with open(r'../data/temp_merged_dfs.pkl', 'rb') as f:
-    temp_merged_dfs = pickle.load(f)
-# Temperature_Lapse_rate_season(temp_merged_dfs)
 def zero_deg_altitude(all_merged_dfs):
     # Filter out stations with 'TB' in the name
     all_merged_dfs = {station: df for station, df in all_merged_dfs.items() if 'TB' not in station}
@@ -197,9 +146,9 @@ def zero_deg_altitude(all_merged_dfs):
     plt.show()
 
     return interpolated_temp_df
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import warnings
-import os
-warnings.filterwarnings('ignore')
+
+
+if __name__ == '__main__':
+    temp_merged_dfs = load_temp_merged()
+    interpolated_temp_df = zero_deg_altitude(temp_merged_dfs)
+    print(interpolated_temp_df[['lapse_rate', 'Zero_Deg_Elevation', 'One_Deg_Elevation']].describe())

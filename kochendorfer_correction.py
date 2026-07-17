@@ -1,6 +1,16 @@
+"""Kochendorfer wind-induced undercatch correction for the pluviometer and
+AWS precipitation records (snow and mixed precipitation).
+
+process_and_save() applies the correction to every station in STATIONS and
+writes data/Cleaned/Kochendorfer_corrected/<station>_kochendorfer_corrected.csv.
+
+Copyright (c) 2026 A. Kwadijk, Utrecht University. Licensed under CC BY 4.0.
+"""
 import os
+
 import numpy as np
 import pandas as pd
+
 
 """
 Apply Kochendorfer wind-induced undercatch correction for mixed and solid 
@@ -462,4 +472,8 @@ def fill_missing_months_with_ratio(corrected, prec, ce, ptype, index, station):
 
 
 # # Call main processing and then plot results
-process_and_save()
+
+
+if __name__ == '__main__':
+    # Regenerates data/Cleaned/Kochendorfer_corrected
+    process_and_save()

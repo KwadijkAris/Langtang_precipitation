@@ -1,9 +1,10 @@
+"""Copyright (c) 2026 A. Kwadijk, Utrecht University. Licensed under CC BY 4.0."""
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import geopandas as gpd
-from Data_overview_plot import get_station_coordinate
-from Data_overview_plot import get_elevation
+from station_data import get_station_coordinate
+from station_data import get_elevation
 import os
 import rasterio
 from shapely.geometry import LineString, Point
@@ -390,4 +391,8 @@ def analyze_valley_geometry(plot_map=True):
         traceback.print_exc()
         print(f"An error occurred: {e}")
 
-analyze_valley_geometry(plot_map=False)
+
+if __name__ == '__main__':
+    # Regenerates data/Geometry/calculated_cross_sectional_areas_and_width.csv
+    # (overwrites the shipped file, which was produced with an earlier code state)
+    analyze_valley_geometry(plot_map=False)
