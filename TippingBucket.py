@@ -688,7 +688,7 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
             station_name = station
 
             # Read the TEST2.txt file and extract the 'Data gap' column
-            test_file_path = r"../data/Data_overview/TEST2.txt"
+            test_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'Data_overview', 'TEST2.txt')
             with open(test_file_path, 'r') as file:
                 lines = file.readlines()
                 data_gap_line = next((line for line in lines if station_name in line and 'Data gap' in line), None)
@@ -723,4 +723,3 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
         
 
     return tipping_buckets
-TippingBucket_prec(update_csv=True, dt='0.25h')
