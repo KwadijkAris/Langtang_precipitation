@@ -1,36 +1,38 @@
+"""Shared station metadata access and raw-data readers.
+
+All paths resolve relative to this file: raw and cleaned data live in
+<zenodo_root>/data, results go to <zenodo_root>/results.
+
+Copyright (c) 2026 A. Kwadijk, Utrecht University. Licensed under CC BY 4.0.
+"""
 import numpy as np
 import pandas as pd
 import os
 import sys
 from pathlib import Path
 
-_SCRIPT_DIR        = Path(os.path.abspath(__file__)).parent   # always absolute
-if getattr(sys, "frozen", False):
-    _DATA_DIR = Path(sys.executable).parent / "data"
-else:
-    _local    = _SCRIPT_DIR.parent / "data"
-    _local_ok = all([
-        (_local / "Data_overview"   / "TEST2.txt").exists(),
-        (_local / "LapseRate"       / "lapse_rate.csv").exists(),
-        (_local / "Zero_isotherm"   / "zero_isotherm.csv").exists(),
-        (_local / "Cleaned" / "Pluvio").exists(),
-    ])
-    _DATA_DIR = _local if _local_ok else Path(os.path.abspath(str(_SCRIPT_DIR.parent / "data")))
+_SCRIPT_DIR = Path(os.path.abspath(__file__)).parent   # always absolute
+_DATA_DIR = _SCRIPT_DIR.parent / "data"                # <zenodo_root>/data
+_RESULTS_DIR = _SCRIPT_DIR.parent / "results"          # <zenodo_root>/results
 _DATA_OVERVIEW_TXT = str(_DATA_DIR / "Data_overview" / "TEST2.txt")
 
 
+def resolve_path(file_path):
+    """Resolve metadata paths against the Zenodo base directory."""
+    path = Path(file_path)
+    if path.is_absolute():
+        return path
+
+    parts = path.parts
+    if parts and parts[0] == "..":
+        return (_SCRIPT_DIR / path).resolve()
+    if parts and parts[0] == "data":
+        return (_SCRIPT_DIR.parent / path).resolve()
+    return (_SCRIPT_DIR / path).resolve()
 
 
-
-# # Define the file paths
-file_path = _DATA_OVERVIEW_TXT
-file_path2 = r"W:\field_data\langtang\Meteo\TippingBuckets\20231129_TB_LangshishaBC_10271177_data.csv"
-
-# Create a dataframe from a csv file
 def read_csv(file_path):
-    return pd.read_csv(file_path, delimiter='\t', header=0)
-
-
+    return pd.read_csv(resolve_path(file_path), delimiter='\t', header=0)
 
 
 def get_dir(station_names):
@@ -47,8 +49,6 @@ def get_dir(station_names):
         except IndexError:
             raise ValueError(f"Directory for station '{station_name}' not found.")
     return dirs
-
-
 
 
 def get_elevation(station_names):
@@ -68,8 +68,6 @@ def get_elevation(station_names):
     return elevs
 
 
-    
-
 def get_measurement(station_names):
     file_path = _DATA_OVERVIEW_TXT
 
@@ -85,8 +83,6 @@ def get_measurement(station_names):
         except IndexError:
             raise ValueError(f"measurement for station '{station_name}' not found.")
     return elevs
-
-
 
 
 def get_station_coordinate(station_names):
@@ -112,7 +108,6 @@ def get_station_coordinate(station_names):
             raise ValueError(f"Coordinates for station '{station_name}' not found.")
     
     return lon, lat
-
 
 
 def read_pluvio_cleaned(station_names, dt=None, no_threshold=False):
@@ -158,6 +153,12 @@ def read_pluvio_cleaned(station_names, dt=None, no_threshold=False):
             df = df.drop(columns=['Precipitation'], errors='ignore')
         elif station in kochendorfer_stations:
             print('No Kochendorfer correction was found for station:', station)
+
+        # Cleaned/Temperature files store one hourly 'TEMP' column; expose it
+        # under the reader's usual hourly name
+        if 'TEMP' in df.columns:
+            df['TEMP'] = pd.to_numeric(df['TEMP'].replace('NAN', np.nan), errors='coerce')
+            df = df.rename(columns={'TEMP': 'Temperature_1H'})
 
         if 'Rainfall_15min' in df.columns:
             df['Rainfall_15min'] = df['Rainfall_15min'].replace('NAN', np.nan)
@@ -209,11 +210,9 @@ def read_pluvio_cleaned(station_names, dt=None, no_threshold=False):
     return cleaned_merged
 
 
-
-
 def read_temp_TB(file_path):
     try:
-        df = pd.read_csv(file_path)
+        df = pd.read_csv(resolve_path(file_path))
         df['DATETIME'] = pd.to_datetime(df['DATE'] + ' ' + df['TIME'], format='%Y-%m-%d %H:%M:%S')
         df = df.drop(columns=['DATE', 'TIME'])
         return df
@@ -221,14 +220,15 @@ def read_temp_TB(file_path):
         print(f"Error: The file at {file_path} was not found.")
         return None
 
-# Create a dataframe from a CSV file
+
 def read_rainfall_TB(file_path):
+    file_path = resolve_path(file_path)
     df = pd.read_csv(file_path)
     df['DATETIME'] = pd.to_datetime(df['DATE'] + ' ' + df['TIME'], format='%Y-%m-%d %H:%M:%S')
     df = df.drop(columns=['DATE', 'TIME'])
 
-    if file_path == r'../data/raw/TippingBuckets/TB_Numthang_34328_data.csv':
-        filepath2 = r'../data/raw/TippingBuckets/TB_Numthang_10271178_data.csv'
+    if file_path == resolve_path(r'../data/raw/TippingBuckets/TB_Numthang_34328_data.csv'):
+        filepath2 = resolve_path(r'../data/raw/TippingBuckets/TB_Numthang_10271178_data.csv')
         df2 = pd.read_csv(filepath2)
         df2['DATETIME'] = pd.to_datetime(df2['DATE'] + ' ' + df2['TIME'], format='%Y-%m-%d %H:%M:%S')
         df2 = df2[df2['DATETIME'] >= '2014-10-10 09:22:58']
@@ -239,3 +239,54 @@ def read_rainfall_TB(file_path):
     
     
     return df
+
+
+def read_pluvio(file_path):
+    df = pd.read_csv(resolve_path(file_path))
+    df['DATETIME'] = pd.to_datetime(df['Date'] + ' ' + df['Time'], format='%Y-%m-%d %H:%M:%S')
+    df = df.drop(columns=['Date', 'Time'])
+
+    # Check for Temp columns and create a new Temp column
+    if 'Temp new' in df.columns and 'Temp old' in df.columns:
+        df['Temp'] = df['Temp new'].combine_first(df['Temp old'])
+    elif 'Temp new' in df.columns:
+        df['Temp'] = df['Temp new']
+    elif 'Temp old' in df.columns:
+        df['Temp'] = df['Temp old']
+    return df
+
+
+def read_SNOWAMP(file_path):
+    df = pd.read_csv(resolve_path(file_path))
+    df = df.rename(columns={'DATE': 'Date', 'TIME': 'Time'})
+    df['DATETIME'] = pd.to_datetime(df['Date'] + ' ' + df['Time'], format='%Y-%m-%d %H:%M:%S')
+    df = df.drop(columns=['Date', 'Time'])
+    return df
+
+
+def read_AWS(file_path):
+    df = pd.read_csv(resolve_path(file_path))
+    # MicroMet files (e.g. Morimoto MM) use different headers; normalize to AWS names
+    df = df.rename(columns={'Wind_Dir': 'WINDDIR', 'Wind_Speed': 'WSPD', 'Rel_Air_Press': 'PRES'})
+    try:
+        df['DATETIME'] = pd.to_datetime(df['DATE'] + ' ' + df['TIME'], format='%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        df['DATETIME'] = pd.to_datetime(df['DATE'] + ' ' + df['TIME'], format='%Y-%m-%d %H:%M')
+    df = df.drop(columns=['DATE', 'TIME'])
+    return df
+
+
+def get_season(dt):
+    m = dt.month
+    d = dt.day
+    if (m == 6 and d > 15) or m in [7, 8, 9]:
+        return 'Monsoon'
+    elif m == 10 or m == 11 or (m == 12 and d < 31):
+        return 'Postmonsoon'
+    elif m in [3, 4, 5] or (m == 6 and d <= 15):
+        return 'Premonsoon'
+    elif m == 1 or m == 2:
+        return 'Winter'
+    else:
+        return 'Other'
+
