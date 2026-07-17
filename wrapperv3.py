@@ -11,13 +11,9 @@ import pickle
 import seaborn as sns
 import calendar
 
-from station_data import get_dir
 from station_data import get_elevation
 from station_data import read_pluvio_cleaned
 from station_data import get_station_coordinate
-
-from station_data import read_AWS
-from generate_humidity_timeseries import get_seasonal_RH_PRES_data
 
 import os
 from pathlib import Path
@@ -51,6 +47,19 @@ STATION_ABBREV = {
     'Yala Glacier AWS': 'T6',
     'Langtang Glacier AWS': 'T7'
 }
+
+def _read_radiation_cleaned(station):
+    """Cleaned hourly radiation series (KINC/KUPW/LINC) for a station from
+    data/Cleaned/Radiation, produced by clean_SW_LW.save_cleaned_radiation().
+    This keeps wrapperv3 runnable on cleaned files only, without raw data."""
+    path = _DATA_DIR / 'Cleaned' / 'Radiation' / f'{station}_radiation.csv'
+    if not path.is_file():
+        raise FileNotFoundError(f'No cleaned radiation file for {station}: {path}')
+    df = pd.read_csv(path, index_col='DATETIME', parse_dates=True)
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    return df
+
 
 # Load temp_merged_dfs from the pickle file
 with open(_DATA_DIR / 'Cleaned' / 'Temperature' / 'temp_merged_dfs.pkl', 'rb') as f:
@@ -1292,15 +1301,10 @@ def plot_monthly_climate_overview():
     swlw_hourly = {}  # store hourly ratio series per station
     try:
         for station in AWS_STATIONS:
-            file_path = get_dir([station])
-            if not file_path:
-                file_path = get_dir(station)
-            if not (isinstance(file_path, (list, tuple)) and file_path and file_path[0]):
+            try:
+                aws_data = _read_radiation_cleaned(station)
+            except FileNotFoundError:
                 continue
-            aws_data = read_AWS(file_path[0])
-            if 'DATETIME' in aws_data.columns:
-                aws_data['DATETIME'] = pd.to_datetime(aws_data['DATETIME'])
-                aws_data.set_index('DATETIME', inplace=True)
             if 'KINC' in aws_data.columns and 'LINC' in aws_data.columns:
                 kinc = pd.to_numeric(aws_data['KINC'], errors='coerce')
                 linc = pd.to_numeric(aws_data['LINC'], errors='coerce')
@@ -2621,8 +2625,7 @@ def plot_snowcover_albedo(font_scale=2.25):
     station_names = ['Yala BC AWS', 'Kyangjin AWS']
     aws_data_dict = {}
     for station in station_names:
-        file_path = get_dir(station)
-        aws_data_dict[station] = read_AWS(file_path[0])
+        aws_data_dict[station] = _read_radiation_cleaned(station)
 
     # Each station gets a row; timeseries left, bar plot right
     fig, axes = plt.subplots(len(station_names), 2,
@@ -2758,16 +2761,6 @@ def analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_sca
     # Use Arial and allow simple font scaling
     plt.rcParams['font.family'] = 'Arial'
 
-    # Load AWS data (time index and temperature)
-    aws_data_dict = {}
-    for station in year_round_stations:
-        file_path = get_dir(station)
-        df = read_AWS(file_path[0])
-        if 'DATETIME' in df.columns:
-            df['DATETIME'] = pd.to_datetime(df['DATETIME'])
-            df.set_index('DATETIME', inplace=True)
-        aws_data_dict[station] = df
-
     # Load precipitation data
     all_stations_pluvio = list(set(year_round_stations + pluvio_temp_stations))
     try:
@@ -2819,7 +2812,12 @@ def analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_sca
         """Monthly mean surface LCL, grouped by month across all years."""
         monthly_lcl = {}
         try:
-            station_seasonal_data = get_seasonal_RH_PRES_data()
+            # TEMP/RH from the shipped humidity timeseries (no raw data needed)
+            _moist = pd.read_csv(
+                _DATA_DIR / 'Moisture' / 'Kyangjin_AWS_humidity_timeseries.csv',
+                index_col='DATETIME', parse_dates=True, na_values=['NA'])
+            _moist = _moist.rename(columns={'TAIR': 'TEMP'})
+            station_seasonal_data = {'Kyangjin AWS': _moist}
         except Exception as e:
             print(f"Error loading RH/TEMP data for LCL subplot: {e}")
             return monthly_lcl
@@ -2849,34 +2847,26 @@ def analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_sca
         return monthly_lcl
 
     # Collect and merge all data for all stations
+    # (temperature and precipitation both from the cleaned station files)
     all_data_list = []
     for station in year_round_stations:
-        if station not in aws_data_dict or station not in precip_merged_df:
-            continue
-        df_aws = aws_data_dict[station].copy()
         df_rain = precip_merged_df[station].copy()
-        # Temperature
-        if 'TAIR' in df_aws.columns:
-            df_aws['TAIR'] = pd.to_numeric(df_aws['TAIR'], errors='coerce')
-            df_aws['dT_1h'] = df_aws['TAIR'].diff(periods=1)
-        elif 'TA' in df_aws.columns:
-            df_aws['TA'] = pd.to_numeric(df_aws['TA'], errors='coerce')
-            df_aws['dT_1h'] = df_aws['TA'].diff(periods=1)
+        # Temperature from the cleaned file (Temperature_1H renamed to TEMP)
+        if 'TEMP' in df_rain.columns:
+            df_rain['TEMP'] = pd.to_numeric(df_rain['TEMP'], errors='coerce')
+            df_rain['dT_1h'] = df_rain['TEMP'].diff(periods=1)
         else:
-            df_aws['dT_1h'] = np.nan
+            df_rain['dT_1h'] = np.nan
         # Rain
         if 'Hourly_Rain' in df_rain.columns:
             df_rain['Hourly_Rain'] = pd.to_numeric(df_rain['Hourly_Rain'], errors='coerce')
-        # Merge
-        df_combined = pd.DataFrame(index=df_aws.index)
-        df_combined['dT_1h'] = df_aws['dT_1h']
-        df_combined['Hourly_Rain'] = df_rain['Hourly_Rain'].reindex(df_combined.index)
+        df_combined = pd.DataFrame(index=df_rain.index)
+        df_combined['dT_1h'] = df_rain['dT_1h']
+        df_combined['Hourly_Rain'] = df_rain['Hourly_Rain']
         df_combined['season'] = df_combined.index.map(get_season_custom)
         all_data_list.append(df_combined)
     # Pluvio stations: temperature and precipitation from cleaned pluvio data.
     for pluvio_station in pluvio_temp_stations:
-        if pluvio_station not in precip_merged_df:
-            continue
         df_precip = precip_merged_df[pluvio_station].copy()
         if 'TEMP' in df_precip.columns:
             df_precip['TEMP'] = pd.to_numeric(df_precip['TEMP'], errors='coerce')

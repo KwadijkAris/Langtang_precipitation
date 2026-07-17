@@ -7,10 +7,11 @@ analysis (wrapperv3.py) derives SW/LW ratios and albedo from these.
 
 Copyright (c) 2026 A. Kwadijk, Utrecht University. Licensed under CC BY 4.0.
 """
+import os
 import numpy as np
 import pandas as pd
 
-from station_data import get_dir, read_AWS
+from station_data import get_dir, read_AWS, _DATA_DIR
 
 
 def get_aws_df_SW_LW(Station=None):
@@ -34,3 +35,25 @@ def get_aws_df_SW_LW(Station=None):
         cols = [c for c in ['KINC', 'KUPW', 'LINC'] if c in df.columns]
         radiation_dict[station] = df[cols]
     return radiation_dict
+
+
+def save_cleaned_radiation():
+    """Write the cleaned radiation series as hourly means to
+    data/Cleaned/Radiation/<station>_radiation.csv (DATETIME + KINC/KUPW/LINC).
+
+    These shipped files are what the analysis (wrapperv3.py) reads, so it
+    runs without access to the raw data."""
+    radiation_dict = get_aws_df_SW_LW()
+    out_dir = _DATA_DIR / 'Cleaned' / 'Radiation'
+    os.makedirs(out_dir, exist_ok=True)
+    for station, df in radiation_dict.items():
+        hourly = df.resample('h').mean()
+        out = out_dir / f'{station}_radiation.csv'
+        hourly.to_csv(out, index_label='DATETIME')
+        print(f'Saved radiation data for {station} to {out}')
+    return radiation_dict
+
+
+if __name__ == '__main__':
+    # Regenerates data/Cleaned/Radiation from the raw AWS records
+    save_cleaned_radiation()
