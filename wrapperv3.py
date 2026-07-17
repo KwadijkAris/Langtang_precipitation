@@ -1339,23 +1339,7 @@ def plot_monthly_climate_overview():
                 
 
             # Plot daily timeseries for SW/LW for Yala BC AWS
-           
-        # ── Hourly SW/LW timeseries (all stations) ──────────────────
-        if swlw_hourly:
-            fig_h, ax_h = plt.subplots(figsize=(14, 4))
-            for station, ratio_h in swlw_hourly.items():
-                color = STATION_COLORS.get(station, None)
-                label = STATION_LABEL.get(station, station)
-                ax_h.plot(ratio_h.index, ratio_h.values, color=color,
-                          linewidth=0.5, alpha=0.7, label=label)
-            ax_h.set_title('SW/LW Ratio – Hourly Timeseries')
-            ax_h.set_xlabel('Date')
-            ax_h.set_ylabel('SW/LW (–)')
-            ax_h.legend(fontsize=FS_LEGEND, frameon=False)
-            ax_h.grid(True, linestyle='--', alpha=0.4)
-            fig_h.tight_layout()
-            plt.show()
-
+       
     except Exception as e:
         print(f"Could not load radiation data: {e}")
 
@@ -1560,6 +1544,8 @@ def plot_monthly_climate_overview():
     plt.show()
     plt.rcParams.update(_prev_rc)   # don't leak Arial/size into other figures
     return fig
+
+
 def plot_precip_august_may_comparison_with_slope_stations(STATION_ABBREV=STATION_ABBREV,
                                                           font_scale=1.5):
     """
@@ -3435,4 +3421,3 @@ def plot_combined_snowfall_rainfall_analysis():
     plt.show()
     return fig2
 
-# plot_precip_august_may_comparison_with_slope_stations(STATION_ABBREV=STATION_ABBREV,font_scale=1.5)
