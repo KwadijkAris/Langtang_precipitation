@@ -1899,13 +1899,17 @@ def plot_monthly_climate_overview():
                 ratio_h_raw = ratio_h_raw.where(ratio_h_raw > 0, np.nan)
                 ratio_h = ratio_h_raw.dropna()
                 swlw_hourly[station] = ratio_h
-                # Keep the daily-full-24h rule explicitly for daily means.
-                sw_daily = _daily_mean_complete(kinc)
-                lw_daily = _daily_mean_complete(linc)
+                # Ratio of plain daily means, pooled per calendar month.
+                sw_daily = kinc.resample('D').mean()
+                lw_daily = linc.resample('D').mean()
                 ratio = (sw_daily / lw_daily.reindex(sw_daily.index)).dropna()
                 ratio = ratio[ratio > 0]
-                swlw_monthly[station], swlw_p10[station], swlw_p90[station], cnt, cov = \
-                    _monthly_climatology_from_valid_monthyears(ratio_h_raw)
+
+                grp = ratio.groupby(ratio.index.month)
+                swlw_monthly[station] = grp.mean()
+                swlw_p10[station]     = grp.quantile(0.10)
+                swlw_p90[station]     = grp.quantile(0.90)
+                cnt, cov = _monthyear_counts_and_coverage(ratio_h_raw)
                 _append_coverage(f"SW/LW - {station}", cnt, cov)
 
             # Plot daily timeseries for SW/LW for Yala BC AWS
@@ -3615,4 +3619,427 @@ def analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_sca
     return
 
 # analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_scale=2, only_panel_a=True)
+
+
+def plot_combined_snowfall_rainfall_analysis():
+    """
+    Combined precipitation analysis figure:
+      a) Mean monthly precipitation by elevation (heatmap, all stations)
+      b) Daily precipitation intensity distribution – Kyangjin AWS (stacked bars, % of days)
+      c) Mean monthly snowfall by elevation (heatmap, Pluvio/AWS stations)
+      d) Top-20 daily extreme events per station (cyclonic events shown as markers)
+    """
+    import matplotlib.dates as mdates
+
+    # ── Global style ──────────────────────────────────────────────────────────
+    plt.rcParams.update({'font.family': 'sans-serif', 'font.sans-serif': ['Arial'], 'font.size': 15})
+    base_fs = float(plt.rcParams.get('font.size', 15))
+    FS = {'title': 1.45 * base_fs, 'label': 1.30 * base_fs,
+        'tick': 1.15 * base_fs, 'annot': 1.00 * base_fs}
+
+    #I am distinguishing snow and rain station as pluviometers and tipping buckets. Pluvio measure both rain+snow, tipping buckets only rain
+    # ── Station setup ─────────────────────────────────────────────────────────
+    snow_stations    = ['Langshisha Pluvio', 'Kyangjin AWS', 'Yala BC AWS', 'Morimoto Pluvio']
+    rain_stations    = ['Numthang TB', 'Jathang TB', 'Ganja La TB1', 'Ganja La TB2', 'Ganja La TB3',
+                        'Morimoto TB', 'Shalbachum TB', 'Langshisha BC TB', 'Langshisha Pluvio',
+                        'Morimoto Pluvio', 'Kyangjin AWS', 'Yala BC AWS', 'Lama TB', 'Syabru TB']
+    extreme_stations = ['Kyangjin AWS', 'Yala BC AWS', 'Langshisha Pluvio']
+    all_stations     = list(set(snow_stations + rain_stations + extreme_stations))
+
+    def _abbrev(elev, emap):
+        names = [n for n, e in emap.items() if e == elev]
+        return STATION_ABBREV.get(names[0], names[0]) if names else ''
+
+    # ── Load data (15 min preferred, fallback 1 h) ────────────────────────────
+    all_merged_dfs = {}
+    for station in all_stations:
+        df = read_pluvio_cleaned([station], dt='15min').get(station)
+        if df is None or df.empty:
+            df = read_pluvio_cleaned([station], dt='1h').get(station)
+        if df is not None and not df.empty:
+            all_merged_dfs[station] = df
+
+    elevation_map = {s: get_elevation([s])[0] for s in all_stations}
+
+    COV_THR, T_THR = 1.0, 1.0
+
+    # ── 2. Snowfall processing ────────────────────────────────────────────────
+    snowfall_df = pd.DataFrame()
+    for station in snow_stations:
+        df = all_merged_dfs.get(station)
+        if df is None or df.empty:
+            continue
+        rc = next((c for c in ['Rainfall_1H', 'Rainfall_15min'] if c in df.columns), None)
+        tc = next((c for c in ['Temperature_1H', 'Temperature'] if c in df.columns), None)
+        if not rc or not tc:
+            continue
+        # Rename the temperature and precipitation columns as T, R
+        d = df[[rc, tc]].copy()
+        d.columns = ['R', 'T']
+        # Make year and month indices
+        d['Y'], d['M'] = d.index.year, d.index.month
+        cov = d.groupby(['Y', 'M'])['R'].apply(
+            lambda x: x.notna().sum() / x.size if x.size else 0)
+        # Require full monthly coverage (1.0)
+        ym = cov[cov >= COV_THR]
+        if ym.empty:
+            continue
+        # Require at least 3 qualifying year-months before monthly climatology
+        if len(ym) < 3:
+            continue
+        d_ok = d.join(ym.rename('ok'), on=['Y', 'M'], how='inner').drop(columns='ok')
+        d_ok['S'] = d_ok['R'].where(d_ok['T'] <= T_THR, other=0).fillna(0)
+        ms = d_ok.groupby(['Y', 'M'])['S'].sum().loc[ym.index].groupby('M').mean()
+        r = ms.reset_index(); r.columns = ['Month', 'Snowfall']; r['Elevation'] = elevation_map[station]
+        snowfall_df = pd.concat([snowfall_df, r])
+
+    # ── 3. Rainfall processing (tipping buckets) ────────────────────────────────────────────────
+    rain_df = pd.DataFrame()
+    for station in rain_stations:
+        df = all_merged_dfs.get(station)
+        if df is None or df.empty:
+            continue
+        rc = next((c for c in ['Rainfall_1H', 'Rainfall_15min'] if c in df.columns), None)
+        tc = next((c for c in ['Temperature_1H', 'Temperature'] if c in df.columns), None)
+        if not rc:
+            continue
+        d = df[[rc]].copy(); d.columns = ['R']
+        if tc and tc in df.columns:
+            d['T'] = df[tc]
+        if 'TB' in station and 'T' in d.columns:
+            d.loc[(d['T'] < 1) & (d['R'] == 0), 'R'] = np.nan
+        d['Y'], d['M'] = d.index.year, d.index.month
+        thr = 0.5 if 'TB' in station else 1.0
+        cov = d.groupby(['Y', 'M'])['R'].apply(lambda x: x.notna().sum() / x.size if x.size else 0)
+        ym = cov[cov >= thr]
+        if ym.empty:
+            continue
+        vy = ym.index.get_level_values(0).unique()
+        sums = d[d['Y'].isin(vy)].groupby(['Y', 'M'])['R'].sum()
+        means = sums.loc[ym.index].groupby('M').mean().reset_index()
+        means.columns = ['Month', 'R']; means['Elevation'] = elevation_map[station]
+        rain_df = pd.concat([rain_df, means])
+
+    # ── 4. Intensity distribution (Kyangjin) — % of days ─────────────────────
+    _ic = plt.cm.YlGn
+    INT_COLORS = {
+        'Dry':      '#f0f0f0',
+        '<2 mm':    _ic(1/7), '2–5 mm':    _ic(2/7),
+        '5–10 mm':  _ic(3/7), '10–20 mm':  _ic(4/7),
+        '20–50 mm': _ic(5/7), '>50 mm':    _ic(6/7),
+    }
+    INT_BINS   = [-1, 0.001, 2, 5, 10, 20, 50, 200]
+    INT_LABELS = list(INT_COLORS.keys())
+    avg_cat = None
+    df_kj = all_merged_dfs.get('Kyangjin AWS')
+    if df_kj is not None:
+        dk = df_kj.copy()
+        for o, n in [('Rainfall_1H', 'R'), ('Rainfall_15min', 'R')]:
+            if o in dk.columns:
+                dk = dk.rename(columns={o: n})
+        if 'R' in dk.columns:
+            dk['R'] = pd.to_numeric(dk['R'], errors='coerce')
+            daily = dk.resample('D')['R'].sum().to_frame('R')
+            daily['Cat'] = pd.cut(daily['R'], bins=INT_BINS, labels=INT_LABELS, right=False)
+            daily['Y'], daily['M'] = daily.index.year, daily.index.month
+            monthly_cat = daily.groupby(['Y', 'M', 'Cat'], observed=False).size().unstack(fill_value=0)
+            # Convert counts to temperature belowtotal days in that year-month
+            days_in_month = daily.groupby(['Y', 'M']).size()
+            monthly_cat_pct = monthly_cat.div(days_in_month, axis=0) * 100
+            avg_cat = monthly_cat_pct.groupby('M').mean()
+
+    # ── 5. Extreme events ─────────────────────────────────────────────────────
+    EXT_COLORS = {
+        'Kyangjin AWS':      '#1f78b4',
+        'Yala BC AWS':       '#e6821e',
+        'Langshisha Pluvio': '#2ca02c',
+    }
+
+    # Cyclonic events: (marker, color, date)
+    CYCLONE_MARKERS = {
+        'Phailin': ('*', '#d62728', pd.Timestamp('2013-10-14')),
+        'Hudhud':  ('^', '#e6550d', pd.Timestamp('2014-10-14')),
+        'Yaas':    ('P', '#756bb1', pd.Timestamp('2021-05-27')),
+        'Hamoon':  ('X', '#31a354', pd.Timestamp('2021-10-19')),
+    }
+
+    data_dict, all_extremes, meas_periods = {}, [], {}
+    for station in extreme_stations:
+        df = read_pluvio_cleaned([station], dt='15min').get(station)
+        if df is None or df.empty:
+            df = read_pluvio_cleaned([station], dt='1h').get(station)
+        if df is not None and not df.empty:
+            data_dict[station] = df
+
+    for station in extreme_stations:
+        if station not in data_dict:
+            continue
+        df = data_dict[station].copy()
+        for o, n in [('Rainfall_1H', 'R'), ('Rainfall_15min', 'R'),
+                     ('Temperature_1H', 'T'), ('Temperature', 'T')]:
+            if o in df.columns:
+                df = df.rename(columns={o: n})
+        df['R'] = pd.to_numeric(df['R'] if 'R' in df.columns else pd.Series(dtype=float), errors='coerce')
+        df['T'] = pd.to_numeric(df['T'] if 'T' in df.columns else pd.Series(dtype=float), errors='coerce')
+        df['S'] = np.where((df['T'] <= 1.0) & (df['R'] > 0), df['R'], 0)
+        dv = df['R'].notna().resample('D').max().astype(bool)
+        grps = (dv != dv.shift()).cumsum()
+        vg = dv[dv].groupby(grps[dv])
+        if vg.ngroups > 0:
+            meas_periods[station] = (vg.apply(lambda x: x.index[0]),
+                                     vg.apply(lambda x: x.index[-1]))
+        dagg = df.resample('D').agg({'R': 'sum', 'S': 'sum'})
+        for date, val in dagg['R'].nlargest(20).items():
+            snow_val = df.loc[date:date + pd.Timedelta(days=1) - pd.Timedelta(seconds=1), 'S'].sum()
+            all_extremes.append({'Date': date, 'Precip': val, 'Snow': snow_val, 'Station': station})
+
+    # ── Calculate annual totals for pluviometers ──────────────────────────────
+    pluvio_stations = [s for s in rain_stations if 'Pluvio' in s or 'AWS' in s]
+    annual_totals = {}
+    for station in pluvio_stations:
+        station_data = rain_df[rain_df['Elevation'] == elevation_map[station]]
+        if not station_data.empty:
+            annual_total = station_data['R'].sum()
+            annual_totals[station] = annual_total
+
+    print("\n" + "="*70)
+    print("ANNUAL PRECIPITATION TOTALS (mm)")
+    print("="*70)
+    for station in sorted(annual_totals.keys(), key=lambda s: annual_totals[s], reverse=True):
+        elev = elevation_map[station]
+        total = annual_totals[station]
+        print(f"{station:30s} ({int(elev):4d} m): {total:7.1f} mm")
+
+    kyangjin_total = annual_totals.get('Kyangjin AWS', 0)
+    yala_total     = annual_totals.get('Yala BC AWS', 0)
+    if kyangjin_total > 0 and yala_total > 0:
+        diff     = kyangjin_total - yala_total
+        pct_diff = (diff / yala_total) * 100
+        print("-"*70)
+        print(f"Kyangjin AWS receives {diff:7.1f} mm ({pct_diff:+.1f}%) MORE than Yala BC AWS")
+        print("="*70 + "\n")
+
+    # ── 6. Build figure ───────────────────────────────────────────────────────
+
+    # ── Prepare pivot tables ──────────────────────────────────────────────────
+    rain_df.loc[
+        rain_df['Elevation'].isin([e for s, e in elevation_map.items() if 'TB' in s]) &
+        rain_df['Month'].isin([1, 2, 12]), 'R'
+    ] = np.nan
+    piv_rain = rain_df.pivot_table(
+        index='Elevation', columns='Month', values='R').sort_index(ascending=False)
+    plu_stations = ['Langshisha Pluvio', 'Morimoto Pluvio', 'Kyangjin AWS', 'Yala BC AWS']
+    plu_elevs    = [elevation_map[s] for s in plu_stations if s in elevation_map]
+    piv_rain[13] = piv_rain.sum(axis=1)
+    piv_rain.loc[~piv_rain.index.isin(plu_elevs), 13] = np.nan
+
+    piv_snow = snowfall_df.pivot_table(
+        index='Elevation', columns='Month', values='Snowfall').sort_index(ascending=False)
+    piv_snow[13] = piv_snow.sum(axis=1)
+    piv_snow.loc[~piv_snow.index.isin(plu_elevs), 13] = np.nan
+    vmin_snow, vmax_snow = piv_snow[range(1, 13)].min().min(), piv_snow[range(1, 13)].max().max()
+
+    ext_df = pd.DataFrame(all_extremes).sort_values('Date') if all_extremes else pd.DataFrame()
+
+    # ── Build figure ──────────────────────────────────────────────────────────
+    # Slightly taller layout so panel boxes are vertically larger
+    fig2 = plt.figure(figsize=(17.5, 12.0), facecolor='white', dpi=100)
+    gs2  = GridSpec(2, 4, figure=fig2,
+                    height_ratios=[1.50, 1.00],
+                    hspace=0.36, wspace=0.60)
+
+    ax2_rain = fig2.add_subplot(gs2[0, :2])
+    ax2_int  = fig2.add_subplot(gs2[0, 2:4])
+    ax2_snow = fig2.add_subplot(gs2[1, :2])
+    ax2_ext  = fig2.add_subplot(gs2[1, 2:4])
+
+    def _pl2(ax, letter, x=1.0):
+        return ax.text(x, -0.02, f'({letter})', transform=ax.transAxes,
+                       ha='right', va='top', fontsize=FS['title'], fontweight='bold',
+                       zorder=10, clip_on=False)
+
+    def _panel_outline(ax, color='#333333', lw=1.0):
+        for _sp in ax.spines.values():
+            _sp.set_visible(True)
+            _sp.set_linewidth(lw)
+            _sp.set_color(color)
+
+    # ── Panel A: mean monthly precipitation heatmap ───────────────────────────
+    sns.heatmap(piv_rain, cmap='YlGnBu', annot=True, fmt='.0f', cbar=False,
+                ax=ax2_rain, vmin=0, vmax=350,
+                annot_kws={'size': FS['annot']}, linewidths=0.3, linecolor='white')
+    month_abbrev = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Annual']
+    ax2_rain.set_xticklabels(month_abbrev, fontsize=FS['tick'], rotation=90)
+    ax2_rain.set_yticklabels([_abbrev(e, elevation_map) for e in piv_rain.index],
+                              rotation=0, fontsize=FS['tick'])
+    ax2_rain.tick_params(axis='y', labelsize=FS['tick'])
+    ax2r_r = ax2_rain.twinx()
+    ax2r_r.set_ylim(ax2_rain.get_ylim())
+    ax2r_r.set_yticks([i + 0.5 for i in range(len(piv_rain.index))])
+    ax2r_r.set_yticklabels([f'{int(e)} m' for e in piv_rain.index], fontsize=FS['tick'])
+    ax2r_r.tick_params(axis='y', length=0)
+    for _sp in ax2r_r.spines.values(): _sp.set_visible(False)
+    ax2_rain.set_xlabel(''); ax2_rain.set_ylabel('')
+    _panel_outline(ax2_rain)
+    ann_a = _pl2(ax2_rain, 'a', x=1.15)
+
+    # ── Panel B: daily total distribution as % of days ──────────────────────────
+    if avg_cat is not None:
+        bot2 = np.zeros(12)
+        for lbl in INT_LABELS:
+            if lbl in avg_cat.columns:
+                vals = avg_cat[lbl].reindex(range(1, 13), fill_value=0).values
+                ax2_int.bar(range(1, 13), vals, bottom=bot2, color=INT_COLORS[lbl],
+                            width=0.85, label=lbl, edgecolor='white', linewidth=0.4)
+                bot2 += vals
+    ax2_int.set_xticks(range(1, 13))
+    month_abbrev_short = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    ax2_int.set_xticklabels(month_abbrev_short, rotation=90, fontsize=FS['tick'])
+    ax2_int.set_ylabel('Daily total distribution (% of days)', fontsize=FS['tick'])
+    ax2_int.yaxis.set_label_position('right'); ax2_int.yaxis.tick_right()
+    ax2_int.tick_params(axis='y', labelsize=FS['tick'])
+    ax2_int.set_ylim(0, 105)   # percentages sum to ~100
+    _panel_outline(ax2_int)
+    ax2_int.grid(axis='y', linestyle=':', alpha=0.45, color='gray')
+    leg_int = ax2_int.legend(handles=[plt.Rectangle((0, 0), 1, 1, color=INT_COLORS[l]) for l in INT_LABELS],
+                             labels=INT_LABELS, loc='lower left', ncol=4, fontsize=FS['tick'], frameon=True,
+                             facecolor='white', edgecolor='#d0d0d0',
+                             handlelength=1, handleheight=0.9)
+    ann_b = _pl2(ax2_int, 'b')
+
+    # ── Panel C: mean monthly snowfall heatmap ────────────────────────────────
+    sns.heatmap(piv_snow, cmap='Blues', annot=True, fmt='.0f', cbar=False,
+                vmin=vmin_snow, vmax=vmax_snow,
+                ax=ax2_snow, annot_kws={'size': FS['annot']},
+                linewidths=0.4, linecolor='white')
+    ax2_snow.set_xticklabels(month_abbrev, fontsize=FS['tick'], rotation=90)
+    ax2_snow.set_yticklabels([_abbrev(e, elevation_map) for e in piv_snow.index],
+                              rotation=0, fontsize=FS['tick'])
+    ax2_snow_r = ax2_snow.twinx()
+    ax2_snow_r.set_ylim(ax2_snow.get_ylim())
+    ax2_snow_r.set_yticks([i + 0.5 for i in range(len(piv_snow.index))])
+    ax2_snow_r.set_yticklabels([f'{int(e)} m' for e in piv_snow.index], fontsize=FS['tick'])
+    ax2_snow_r.tick_params(axis='y', length=0)
+    for _sp in ax2_snow_r.spines.values(): _sp.set_visible(False)
+    ax2_snow.set_xlabel(''); ax2_snow.set_ylabel('')
+    _panel_outline(ax2_snow)
+    ann_c = _pl2(ax2_snow, 'c', x=1.15)
+
+    # ── Panel D: extreme events + cyclone markers ─────────────────────────────
+    leg_ext_main, leg_ext_cyc, ann_d = None, None, None
+    if all_extremes:
+        # Station bars and dots
+        for _, row in ext_df.iterrows():
+            c = EXT_COLORS[row['Station']]
+            ax2_ext.vlines(row['Date'], 0, row['Precip'], color=c, alpha=0.75, linewidth=1.8, zorder=2)
+            ax2_ext.scatter(row['Date'], row['Precip'], color=c, s=28, zorder=3,
+                            edgecolors='white', linewidth=0.4)
+            if row['Snow'] > 0:
+                ax2_ext.scatter(row['Date'], row['Snow'], color='#a8d8ea', edgecolors='#1a6896',
+                                marker='D', s=22, zorder=4)
+
+        # Cyclone markers: one distinct shape per event plotted just above the bar top
+        cyclone_legend_handles = []
+        for name, (mkr, col, date) in CYCLONE_MARKERS.items():
+            match = ext_df[ext_df['Date'] == date]
+            if name in ('Hamoon', 'Yaas'):
+                y_pos = 100
+            else:
+                y_pos = match['Precip'].max() + 4 if not match.empty else 108
+            ax2_ext.scatter(date, y_pos, marker=mkr, color=col, s=320,
+                            zorder=6, edgecolors='white', linewidth=0.6)
+            cyclone_legend_handles.append(
+                Line2D([0], [0], marker=mkr, color='w', markerfacecolor=col,
+                       markeredgecolor='white', markersize=17, label=name)
+            )
+
+        # Station + snow legend above panel (use PLU1, PLU2, PLU3 abbreviations)
+        hdl_st2 = [Line2D([0], [0], color=c, lw=2,
+                          label=f'{STATION_ABBREV.get(s, s)}  ({int(elevation_map[s])} m)')
+                   for s, c in EXT_COLORS.items()]
+        # Overwrite labels for the three main stations
+        for i, s in enumerate(EXT_COLORS.keys()):
+            abbrev = STATION_ABBREV.get(s, s)
+            hdl_st2[i].set_label(f'{abbrev}  ({int(elevation_map[s])} m)')
+
+        hdl_snow2 = Line2D([0], [0], marker='D', color='w', markerfacecolor='#a8d8ea',
+                           markeredgecolor='#1a6896', markersize=11, label='Snow event')
+        # Station legend below panel D (one row)
+        leg_ext_main = ax2_ext.legend(
+            handles=hdl_st2,
+            loc='upper center',
+            bbox_to_anchor=(0.5, -0.23),
+            ncol=3,
+            fontsize=FS['tick'],
+            frameon=False,
+            columnspacing=1.0,
+            handletextpad=0.5)
+        ax2_ext.add_artist(leg_ext_main)
+
+        # Extremes legend at top of panel D: cyclones + snow event, single row
+        leg_ext_cyc = ax2_ext.legend(
+            handles=cyclone_legend_handles + [hdl_snow2],
+            loc='lower center',
+            bbox_to_anchor=(0.5, 1.0),
+            ncol=len(cyclone_legend_handles) + 1,
+            fontsize=FS['tick'],
+            frameon=False,
+            columnspacing=0.8,
+            handletextpad=0.3,
+            handlelength=1.2,
+            borderaxespad=0.1)
+        ax2_ext.add_artist(leg_ext_cyc)
+
+        ax2_ext.set_ylim(0, 320)
+        ax2_ext.set_ylabel('Extreme daily precipitation (mm)', fontsize=FS['tick'])
+        ax2_ext.yaxis.set_label_position('right'); ax2_ext.yaxis.tick_right()
+        _panel_outline(ax2_ext)
+        ax2_ext.grid(axis='y', ls=':', alpha=0.45, color='gray')
+        ax2_ext.tick_params(labelsize=FS['tick'])
+        ax2_ext.xaxis.set_major_locator(mdates.YearLocator())
+        ax2_ext.set_xlim(right=pd.Timestamp('2026-12-31'))
+        from matplotlib.ticker import FuncFormatter as _FF2
+        ax2_ext.xaxis.set_major_formatter(
+            _FF2(lambda x, _: '' if mdates.num2date(x).year >= 2027
+                 else mdates.num2date(x).strftime('%Y')))
+        ax2_ext.tick_params(axis='x', labelrotation=90)
+        ann_d = _pl2(ax2_ext, 'd')
+
+
+    # Layout: more generous margins, keep everything inside 1920x1200px
+    fig2.subplots_adjust(hspace=0.32, wspace=0.60,
+                         left=0.10, right=0.92, top=0.96, bottom=0.15)
+    fig2.canvas.draw()
+
+    # Colorbar width and padding
+    CBAR_W, CBAR_PAD, CBAR_FS = 0.012, 0.040, FS['tick']
+    pos_a2 = ax2_rain.get_position()
+    pos_c2 = ax2_snow.get_position()
+    # Place colorbars just inside the left edge, not outside
+    left_x2 = max(0.01, min(pos_a2.x0, pos_c2.x0) - CBAR_PAD - CBAR_W)
+
+    cax_a2 = fig2.add_axes([left_x2, pos_a2.y0, CBAR_W, pos_a2.height])
+    cb_a2  = fig2.colorbar(ax2_rain.collections[0], cax=cax_a2)
+    cb_a2.ax.yaxis.set_label_position('left'); cb_a2.ax.yaxis.tick_left()
+    cb_a2.set_label('Precipitation (mm)', fontsize=CBAR_FS)
+    cb_a2.ax.tick_params(labelsize=CBAR_FS)
+    cb_a2.outline.set_visible(False)
+    for _sp in cax_a2.spines.values():
+        _sp.set_visible(False)
+
+    cax_c2 = fig2.add_axes([left_x2, pos_c2.y0, CBAR_W, pos_c2.height])
+    cb_c2  = fig2.colorbar(ax2_snow.collections[0], cax=cax_c2)
+    cb_c2.ax.yaxis.set_label_position('left'); cb_c2.ax.yaxis.tick_left()
+    cb_c2.set_label('Snowfall (mm w.e.)', fontsize=CBAR_FS)
+    cb_c2.ax.tick_params(labelsize=CBAR_FS)
+    cb_c2.outline.set_visible(False)
+    for _sp in cax_c2.spines.values():
+        _sp.set_visible(False)
+
+    plt.show()
+
+
+# plot_combined_snowfall_rainfall_analysis()
 

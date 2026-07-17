@@ -212,9 +212,12 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
         temps = []
         elevs = []
         for station in all_merged_dfs.keys():
+            # Tipping bucket temperature sensors are not used for the lapse rate
+            if 'TB' in station:
+                continue
             temp = row[station]
             elev = row[f'{station}_Elevation']
-            if not pd.isna(temp) and not pd.isna(elev) and elev < 7000:
+            if not pd.isna(temp) and not pd.isna(elev):
                 temps.append(temp)
                 elevs.append(elev)
         if len(temps) > 6:
@@ -261,10 +264,13 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
     for station, elevation in zip(station_no_temp, elevation1):
         temp_at_elevations_df[station] = kyangjin_aws_df['Avg_Temp_H'] + temp_elev_df['Gradient'].values * (elevation - get_elevation(['Kyangjin AWS'])[0])
 
-    # Fill NaN values with temperature estimates from the same dates but from other available years
+    # Fill NaN values with temperature estimates from the same date and hour of day but from other available years
     for station in station_no_temp:
         temp_at_elevations_df[station] = temp_at_elevations_df[station].fillna(
-            temp_at_elevations_df.groupby(temp_at_elevations_df['DATETIME'].dt.dayofyear)[station].transform('mean')
+            temp_at_elevations_df.groupby(
+                [temp_at_elevations_df['DATETIME'].dt.dayofyear,
+                 temp_at_elevations_df['DATETIME'].dt.hour]
+            )[station].transform('mean')
         )
 
     TB_all_temp = True
@@ -398,6 +404,19 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
             else:
                 removal_done = True
 
+            # Same windows as the TEMP removal in get_TB_df_temp (sensor snow-covered)
+            mask_t = (df.index >= '2019-02-25') & (df.index <= '2019-03-10')
+            df.loc[mask_t, 'Hourly_Rain'] = np.nan
+            df.loc[df.index >= '2024-11-02', 'Hourly_Rain'] = np.nan
+
+        # Same windows as the TEMP removal in get_TB_df_temp (sensor snow-covered,
+        # so precipitation in these periods is likely snow)
+        if station == 'Ganja La TB1':
+            mask1 = (df.index >= '2015-02-25') & (df.index <= '2015-06-07')
+            df.loc[mask1, 'Hourly_Rain'] = np.nan
+            mask2 = (df.index >= '2019-02-06') & (df.index <= '2019-04-03')
+            df.loc[mask2, 'Hourly_Rain'] = np.nan
+
         if station == 'Ganja La TB2':
             mask1 = (
                 (df.index > '2021-06-19') &
@@ -453,12 +472,19 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
                 (df.index <= '2019-10-09')
             )
             before2 = df.loc[mask2, 'Hourly_Rain'].notna().sum()
-            df.loc[mask2, 'Hourly_Rain'] = np.nan        
+            df.loc[mask2, 'Hourly_Rain'] = np.nan
             after2 = df.loc[mask2, 'Hourly_Rain'].notna().sum()
             if before2 == after2:
                 print(f"Removal not done for {station} (2019-04-18 to 2019-10-09)")
             else:
                 removal_done = True
+
+            # Same windows as the TEMP removal in get_TB_df_temp (sensor snow-covered)
+            mask3 = (df.index >= '2014-12-31') & (df.index <= '2015-05-19')
+            df.loc[mask3, 'Hourly_Rain'] = np.nan
+            mask4 = (df.index >= '2019-02-06') & (df.index <= '2019-04-28')
+            df.loc[mask4, 'Hourly_Rain'] = np.nan
+            df.loc[df.index >= '2021-11-10', 'Hourly_Rain'] = np.nan
 
         # Lirung should not be used for any analysis
         if station == 'Lirung Camp TB':
@@ -558,7 +584,13 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
                 print(f"Removal not done for {station} (2020-06-06 06:00 to 07:00)")
             else:
                 removal_done = True
-           
+
+            # Same windows as the TEMP removal in get_TB_df_temp (sensor snow-covered)
+            df.loc[df.index < '2013-10-26 17:00', 'Hourly_Rain'] = np.nan
+            mask_t = (df.index >= '2015-02-25') & (df.index <= '2015-04-01')
+            df.loc[mask_t, 'Hourly_Rain'] = np.nan
+            df.loc[df.index >= '2023-11-03', 'Hourly_Rain'] = np.nan
+
 
 
 
@@ -637,8 +669,15 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
    
     if update_csv == True:
         # Save each tipping bucket data to a CSV file
-        output_dir = r"../data/Cleaned/October/TB"
+        # Anchor to the script location so the output lands in Zenodo\data\Cleaned\TB
+        # regardless of the working directory
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'Cleaned', 'TB')
+        os.makedirs(output_dir, exist_ok=True)
         for station, df in tipping_buckets.items():
+            # Rain and temperature are already merged in every entry; the ' Temp'
+            # entries are uncleaned duplicates, so only the plain station is saved
+            if station.endswith(' Temp'):
+                continue
             # Prepare the file name
             if 'index' in df.columns:
                 df.rename(columns={'index': 'DATETIME'}, inplace=True)
@@ -684,3 +723,4 @@ def TippingBucket_prec(update_csv=False, dt='0.25h'):
         
 
     return tipping_buckets
+TippingBucket_prec(update_csv=True, dt='0.25h')
