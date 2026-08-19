@@ -1,32 +1,45 @@
 """Cleaning of all wind sensors (Kyangjin AWS, Yala BC AWS, Morimoto
 MicroMet, Langshisha Pluvio anemometer).
 
-get_aws_df_wind() contains the wind cleaning and returns the gap-free
-(dropna) seasonal series used by the humidity generation. The files in
-data/Cleaned/Wind were saved from this cleaning chain; the exact save run
-is not preserved in the code, so this script does not overwrite them.
+get_aws_df_wind() contains the wind cleaning and returns a continuous
+hourly seasonal series (gaps kept as NaN, not dropped) used by the
+humidity generation. Call with update_csv=True to (re)write
+data/Cleaned/Wind/<station>_wind_data.csv for every cleaned station.
 
 Copyright (c) 2026 A. Kwadijk, Utrecht University. Licensed under CC BY 4.0.
 """
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import os
 import calendar
-from station_data import (get_dir, get_elevation, read_AWS, read_pluvio,
+from station_data import (get_dir, get_elevation, read_AWS,
                           get_season, _DATA_DIR)
 
 
-def get_aws_df_wind(Station=None):
+def save_wind_data_to_csv(station_seasonal_data):
+    """Save each station's cleaned WSPD/WINDDIR series to
+    data/Cleaned/Wind/<station>_wind_data.csv (same naming convention as
+    the files already shipped there)."""
+    output_dir = _DATA_DIR / "Cleaned" / "Wind"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for station, df in station_seasonal_data.items():
+        file_name = f"{station.replace(' ', '_')}_wind_data.csv"
+        file_path = output_dir / file_name
+        out = df[['WSPD', 'WINDDIR']]
+        out.to_csv(file_path, index_label='DATETIME')
+        print(f'Saved wind data for {station} -> {file_path}')
+
+
+def get_aws_df_wind(Station=None, update_csv=False):
 
     # This function plots and cleans the wind data
     # As the Kyangjin station has been rebuilt, the offset has been corrected for relative to the first measurements taken
 
 
-    # AWS data only for Kyangjin and Yala BC as others do not measure wind.
-
+    # Default set of stations that measure wind: the two AWS stations plus
+    # the Morimoto MicroMet.
     if Station == None:
-        station_names = ['Kyangjin AWS', 'Yala BC AWS']
+        station_names = ['Kyangjin AWS', 'Yala BC AWS', 'Morimoto MM']
     else:
         station_names = Station
 
@@ -49,27 +62,31 @@ def get_aws_df_wind(Station=None):
 
         # Sub-hourly stations (MicroMet logs at 15 min): clean out-of-range values,
         # then aggregate to hourly so they align with the hourly AWS stations.
-        # WSPD uses a plain mean; WINDDIR needs a circular (vector) mean.
+        # To resample the hourly wind direction from Morimoto, we use the prevailing direction, wind speed is calculated using the mean.
         step = df['DATETIME'].diff().median()
         if pd.notna(step) and step < pd.Timedelta('1h'):
             df.loc[df['WINDDIR'] > 400, 'WINDDIR'] = np.nan
             df.loc[df['WSPD'] > 40, 'WSPD'] = np.nan
             df = df.set_index('DATETIME')
-            wd_rad = np.deg2rad(df['WINDDIR'])
+            def prevailing_direction(series, sector_width=10):
+                s = series.dropna()
+                if s.empty:
+                    return np.nan
+                sectors = (np.round((s % 360) / sector_width) * sector_width) % 360
+                return sectors.value_counts().idxmax()
+
             hourly = pd.DataFrame({
                 'WSPD': df['WSPD'].resample('h').mean(),
-                '_sin': np.sin(wd_rad).resample('h').mean(),
-                '_cos': np.cos(wd_rad).resample('h').mean(),
+                'WINDDIR': df['WINDDIR'].resample('h').apply(prevailing_direction),
             })
-            hourly['WINDDIR'] = (np.rad2deg(np.arctan2(hourly['_sin'], hourly['_cos'])) + 360) % 360
-            df = hourly.drop(columns=['_sin', '_cos']).reset_index()
+            df = hourly.reset_index()
 
-        # Filter out data before 2017 for Kyangjin AWS
+        # Filter out data before 2017 for Kyangjin AWS as the station was rebuilt which causes gives a systematic change in wind speeds due to to the local setting
         if station_names[i] == 'Kyangjin AWS':
             mask = (df['DATETIME'].dt.year < 2016)
             df.loc[mask, ['WINDDIR', 'WSPD']] = np.nan
 
-            # Remove the period ('2019-05-05', '2019-11-15') from the data
+            # Remove the period ('2019-05-05', '2019-11-15') from the data as this is considered unreliable.
             remove_mask = (df['DATETIME'] >= '2019-05-04') & (df['DATETIME'] <= '2021-11-12')
             df.loc[remove_mask, ['WINDDIR', 'WSPD']] = np.nan
             aws_data_dict[station_names[i]] = df
@@ -114,12 +131,10 @@ def get_aws_df_wind(Station=None):
         df.set_index('DATETIME', inplace=True)
         df = df[['WINDDIR', 'WSPD']]
         
-         # Make a clean copy of data with datetime index for analysis
-        df_clean_corrected = df.dropna(subset=['WINDDIR', 'WSPD'])
-        df_clean = df.dropna(subset=['WINDDIR', 'WSPD'])
-        station_seasonal_data[station] = df_clean_corrected
-      
-        df_clean = df_clean.copy()
+        # Keep the continuous hourly index - do not drop NaN rows, so gaps
+        # stay as NaN instead of collapsing the time series
+        df_clean_corrected = df.copy()
+        df_clean = df.copy()
         df_clean['Season'] = df_clean.index.map(get_season)
         station_seasonal_data[station] = df_clean
 
@@ -228,58 +243,11 @@ def get_aws_df_wind(Station=None):
         plt.tight_layout()
         plt.show()
 
-        # ---------- SAVE CLEANED DATA ----------#
-        save_data = False
-        if save_data := True:
-            output_dir = str(_DATA_DIR / "Cleaned" / "For_Quinten")
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Create a filename for the station
-            # Sanitize station name for filename
-            sanitized_station_name = station.replace(' ', '_').replace('/', '_')
-            output_filename = f"{sanitized_station_name}_wind_data.csv"
-            output_path = os.path.join(output_dir, output_filename)
-            
-            # Select WSPD and WINDDIR columns from the corrected dataframe
-            data_to_save = df_clean_corrected[['WSPD', 'WINDDIR']]
-            
-            # Save to CSV
-            data_to_save.to_csv(output_path)
-            
-            print(f"Saved cleaned wind data for {station} to {output_path}")
 
-
-    
-        # ---------- MERGE AND SAVE CLEANED DATA FOR KYANGJIN AWS ----------#
-        for station in station_names:
-            if station == 'Kyangjin AWS':
-                try:
-                # Define the path to the target CSV file
-                    target_csv_path = str(_DATA_DIR / "Cleaned" / "For_Quinten" / "Kyangjin AWS.csv")
-                
-                    # Read the existing CSV file
-                    existing_df = pd.read_csv(target_csv_path)
-                    
-                    # Ensure the DATETIME column is in datetime format and set it as the index
-                    existing_df['DATETIME'] = pd.to_datetime(existing_df['DATETIME'])
-                    existing_df.set_index('DATETIME', inplace=True)
-                    
-                    # Select WSPD and WINDDIR columns from the corrected dataframe
-                    data_to_add = df_clean_corrected[['WSPD', 'WINDDIR']]
-                    
-                    # Join the new data with the existing dataframe
-                    # This will add WSPD and WINDDIR columns, aligning on the DATETIME index
-                    merged_df = existing_df.join(data_to_add)
-                    
-                    # Save the merged dataframe back to the CSV file, overwriting it
-                    merged_df.to_csv(target_csv_path)
-                    
-                    print(f"Successfully added wind data to {target_csv_path}")
-                
-                except FileNotFoundError:
-                    print(f"Error: The file {target_csv_path} was not found. Cannot add wind data.")
-                except Exception as e:
-                    print(f"An error occurred while processing {station}: {e}")
-
+    if update_csv:
+        save_wind_data_to_csv(station_seasonal_data)
 
     return station_seasonal_data
+
+
+get_aws_df_wind(update_csv=True)

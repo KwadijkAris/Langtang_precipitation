@@ -11,8 +11,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 from datetime import datetime
-from station_data import (get_dir, get_elevation, get_measurement,
-                          read_pluvio, read_SNOWAMP, read_AWS, _DATA_DIR)
+from station_data import (get_dir, get_elevation,
+                          read_pluvio, read_AWS)
 from clean_temperature import get_aws_df_temp, get_Pluvio_temp
 
 
@@ -263,14 +263,15 @@ def get_aws_df_rain(Station=None, snow=False, apply_max_threshold=True,
 
 def get_Pluvio_rain(station=None, snow=False, correction=True, update_csv=False,
                     apply_max_threshold=True, debug_plots=True,
-                    apply_manual_removal=True, plot_bcon_cumulative=False):
+                    apply_manual_removal=True, plot_bcon_cumulative=False,
+                    plot_bcon_cap_comparison=False):
 
 
     #This function merges the precipitation data of the pluvio meters.
     # It does the following corrections
     # 1. Where status warnings are indicated, set Prec and Bucket_content to NaN (all status warnings)
     # 2. Sets negative values to NaN for precipitation and bucket content
-    # 3. Applies a minimum threshold of 0.2 for bucket content
+    # 3. Applies a minimum threshold of 0.2mm/h for bucket content
     # 4. It only uses bucket content difference measurements, no instantaneous measurements
 
     if station is None:
@@ -324,10 +325,30 @@ def get_Pluvio_rain(station=None, snow=False, correction=True, update_csv=False,
             df_pluvio.loc[mask, ["Prec", "Bucket_content"]] = np.nan
             
 
-            # Remove BCON values above 675: Bucket content = 750 * 0.9 
-            mask_bcon = df_pluvio['Bucket_content'] > 675
+            # Store "without cap" Bucket_content for optional plotting,
+            # but still apply an upper cap of 1500 for readability/robustness
+            bcon_uncapped = df_pluvio['Bucket_content'].where(df_pluvio['Bucket_content'] <= 1500, np.nan).copy()
+
+            # Keep original cleaning cap at 900*0.95 = 855 for analysis
+            mask_bcon = df_pluvio['Bucket_content'] > 900*0.95
             df_pluvio.loc[mask_bcon, 'Bucket_content'] = np.nan
             df_pluvio.loc[mask_bcon, 'Prec'] = np.nan
+
+            if plot_bcon_cap_comparison:
+                plt.figure(figsize=(14, 5))
+                plt.plot(bcon_uncapped.index, bcon_uncapped, label='Bucket_content (without cap)', alpha=0.7)
+                plt.plot(df_pluvio.index, df_pluvio['Bucket_content'], label='Bucket_content (with cap)', alpha=0.7)
+                plt.axhline(900*0.95, color='red', linestyle='--', linewidth=1, label='Cap = 900*0.95 = 855 mm')
+                plt.axhline(1500, color='gray', linestyle=':', linewidth=1, label='Upper limit (without cap) = 1500 mm')
+                plt.title(f'{name} - Bucket content with/without cap')
+                plt.xlabel('Date')
+                plt.ylabel('Bucket content (mm)')
+                plt.legend()
+                plt.grid(True)
+                plt.tight_layout()
+                plt.show()
+
+            
 
 
 
@@ -361,8 +382,7 @@ def get_Pluvio_rain(station=None, snow=False, correction=True, update_csv=False,
             # Apply threshold based on sampling frequency. This is only been applied for robustness, as all pluvio (NOT AWS) data is measured in 15min
             # NOTE: only the derived rainfall-rate column is thresholded here -
             # applying it to the whole dataframe also wiped out Bucket_content
-            # (a cumulative reading that legitimately exceeds these thresholds),
-            # which broke the BCON cumulative debug plot.
+
             if apply_max_threshold:
                 if freq_delta == pd.Timedelta(hours=1) and 'Rainfall_1H' in df_pluvio.columns:
                     df_pluvio.loc[df_pluvio['Rainfall_1H'] > 100, 'Rainfall_1H'] = np.nan
@@ -795,158 +815,10 @@ def get_Pluvio_rain(station=None, snow=False, correction=True, update_csv=False,
 
 
     return merged_df
-
-
-MANUAL_GAPS_PLUVIO = {
-    'Ganja La Pluvio':   [('2014-08-03', '2014-10-13')],
-    'Yala Pluvio':       [('2012-05-01', '2013-01-16'),
-                          ('2014-08-30', '2014-12-13'),
-                          ('2013-07-21', '2013-11-01')],
-    'Morimoto Pluvio':   [('2013-08-05', '2014-05-03'),
-                          ('2014-10-10', '2015-06-07'),
-                          ('2015-07-26', '2015-10-22'),
-                          ('2021-02-26', '2021-11-13'),
-                          ('2023-05-28', '2023-11-11'),
-                          ('2017-10-09', '2017-10-22'),
-                          ('2020-09-24', '2021-11-13'),
-                          ('2017-03-12', '2017-03-15')],
-    'Langshisha Pluvio': [('2021-07-18', '2021-11-13'),
-                          ('2014-05-26', '2014-05-27')],
-}
-
-AWS_MAINTENANCE = {
-    'Kyangjin AWS': [('2022-11-18', '2022-11-19'),
-                     ('2016-10-18', '2017-04-20'),
-                     ('2019-09-27', '2020-03-27'),
-                     ('2016-03-01', '2016-11-01')],
-    'Yala BC AWS':  [('2023-10-13', '2023-10-14'),
-                     ('2022-10-07', '2022-11-03'),
-                     ('2019-09-27', '2020-03-27'),
-                     ('2018-09-13', '2018-10-19'),
-                     ('2018-04-26 12:00', '2018-04-26 16:00'),
-                     ('2014-09-30', '2014-10-14'),
-                     ('2018-09-13', '2018-10-09'),
-                     ('2019-09-25', '2019-10-24'),
-                     ('2022-10-08', '2022-11-15'),
-                     ('2020-09-26', '2020-10-03'),
-                     ('2014-05-06', '2014-05-07'),
-                     ('2016-09-19', '2016-10-13'),
-                     ('2016-05-10', '2017-04-01')],
-}
-
-
-def write_cleaned_csv_rain_temp_swe_pluvio():
-
-    dir=get_dir('snowAMP Ganja La')
-    df = read_SNOWAMP(dir[0])
-
-    df['DATETIME'] = pd.to_datetime(df['DATETIME'])
-    df = df.reset_index()
-
-
-    df.loc[(df['DATETIME'] >= '2016-12-12') & (df['DATETIME'] <= '2017-01-20'), 'Air Temperature(degC)'] = np.nan
-
-    # Filter out all values above 40 mm per hour
-    df['Precipitation(mm)'] = df['Precipitation(mm)'].apply(lambda x: x if x <= 40 else np.nan)
-
-    plt.figure(figsize=(10, 5))
+# get_Pluvio_rain(update_csv=True, plot_bcon_cap_comparison=False)
 
 
 
-    # Remove data for specified date ranges
-   
-
-
-   
-    df.loc[(df['DATETIME'] >= '2018-09-22') & (df['DATETIME'] <= '2018-09-24'), 'Air Temperature(degC)'] = np.nan
-    df.loc[
-        ((df['DATETIME'] >= '2015-10-31') & (df['DATETIME'] <= '2016-04-30')) |
-        ((df['DATETIME'] >= '2018-06-15') & (df['DATETIME'] <= '2018-09-17')) |
-        ((df['DATETIME'] >= '2018-12-12') & (df['DATETIME'] <= '2019-02-14')) |
-        (df['DATETIME'] >= '2019-11-22'),
-        'Air Temperature(degC)'
-    ] = np.nan
-    df.loc[
-    ((df['DATETIME'] >= '2017-10-09') & (df['DATETIME'] <= '2017-11-20')) |
-    ((df['DATETIME'] >= '2018-10-04') & (df['DATETIME'] <= '2018-10-28')) |
-    ((df['DATETIME'] >= '2019-10-09') & (df['DATETIME'] <= '2019-10-27')) |
-    ((df['DATETIME'] >= '2015-10-31') & (df['DATETIME'] <= '2016-04-30')) |
-    ((df['DATETIME'] >= '2018-06-15') & (df['DATETIME'] <= '2018-09-17')) |
-    ((df['DATETIME'] >= '2018-12-12') & (df['DATETIME'] <= '2019-02-14')) |
-    ((df['DATETIME'] >= '2020-10-21') & (df['DATETIME'] <= '2020-11-15')) |
-    ((df['DATETIME'] >= '2019-10-09') & (df['DATETIME'] <= '2019-10-27')) |
-
-    (df['DATETIME'] >= '2021-10-18'),'Precipitation(mm)'] = np.nan
-
-    # Calculate cumulative rainfall
-    df['Cumulative_Rainfall'] = df['Precipitation(mm)'].cumsum()
-
-
-
-    # Plot cumulative rainfall
-    plt.plot(df['DATETIME'], df['Cumulative_Rainfall'], label='Cumulative Rainfall (Ganja La)', color='orange')
-    # Plot other pluvio meters from Cleaned/Pluvio directory
-    pluvio_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'Cleaned', 'Pluvio')
-    plt.figure(figsize=(10, 5))
-    for fname in os.listdir(pluvio_dir):
-        if fname.endswith('.csv') and 'Ganja La' not in fname:
-            other_df = pd.read_csv(os.path.join(pluvio_dir, fname))
-            if 'DATETIME' in other_df.columns and 'Rainfall_1H' in other_df.columns:
-                other_df['DATETIME'] = pd.to_datetime(other_df['DATETIME'])
-                other_df['Rainfall_1H'] = pd.to_numeric(other_df['Rainfall_1H'], errors='coerce')
-                other_df['Cumulative_Rainfall'] = other_df['Rainfall_1H'].cumsum()
-                label = fname.replace('.csv', '')
-                plt.plot(other_df['DATETIME'], other_df['Cumulative_Rainfall'], label=f'Cumulative Rainfall ({label})')
-    plt.show()
-    # Second figure: daily rainfall
-    plt.figure(figsize=(10, 5))
-    # Plot daily rainfall for Ganja La
-    df['Date'] = df['DATETIME'].dt.date
-    daily_rain = df.groupby('Date')['Precipitation(mm)'].sum()
-    plt.bar(daily_rain.index, daily_rain.values, label='Daily Rainfall (Ganja La)', color='orange', alpha=0.7)
-
-    # Plot daily rainfall for other stations
-    for fname in os.listdir(pluvio_dir):
-        if fname.endswith('.csv') and 'Ganja La' not in fname:
-            other_df = pd.read_csv(os.path.join(pluvio_dir, fname))
-            if 'DATETIME' in other_df.columns and 'Rainfall_1H' in other_df.columns:
-                other_df['DATETIME'] = pd.to_datetime(other_df['DATETIME'])
-                other_df['Rainfall_1H'] = pd.to_numeric(other_df['Rainfall_1H'], errors='coerce')
-                other_df['Date'] = other_df['DATETIME'].dt.date
-                daily_rain_other = other_df.groupby('Date')['Rainfall_1H'].sum()
-                label = fname.replace('.csv', '')
-                plt.bar(daily_rain_other.index, daily_rain_other.values, label=f'Daily Rainfall ({label})', alpha=0.5)
-
-    plt.xlabel('Date')
-    plt.ylabel('Daily Rainfall (mm)')
-    plt.title('Daily Rainfall Timeseries')
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-    # plt.plot(df['DATETIME'], df['CS725 SweK(mm)'], label='Pluvio Data', color='blue')
-    # plt.xlabel('DateTime')
-    # plt.ylabel('Precipitation (mm)')
-    # plt.title('Timeseries of Pluvio Data')
-    # plt.legend()
-    # plt.grid(True)
-    # plt.show()
-    update_csv = False
-    if update_csv == True:
-        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'Cleaned', 'Pluvio')
-        # Prepare the file name
-        file_name = datetime.now().strftime("%m%d%Y") + "_snowAMP Ganja La.csv"
-        file_path = os.path.join(output_dir, file_name)
-
-        # Rename TEMP column if necessary
-        if 'Air Temperature(degC)' in df.columns:
-            df.rename(columns={'Air Temperature(degC)': 'Temperature_1H'}, inplace=True)
-
-        # Save the data to CSV
-        df['DATETIME'] = pd.to_datetime(df['DATETIME'])
-        df = df.fillna('NAN')
-        df[['DATETIME', 'Precipitation(mm)','Temperature_1H', 'CS725 SweK(mm)']].fillna(np.nan).to_csv(file_path, index=False, header=['DATETIME', 'Rainfall_1H','Temperature_1H', 'CS725_Swek(mm)'])
 
 if __name__ == '__main__':
     # Runs the pluvio + AWS precipitation cleaning and then applies the

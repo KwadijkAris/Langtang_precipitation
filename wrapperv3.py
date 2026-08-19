@@ -14,6 +14,7 @@ import calendar
 from station_data import get_elevation
 from station_data import read_pluvio_cleaned
 from station_data import get_station_coordinate
+from clean_wind import get_aws_df_wind
 
 import os
 from pathlib import Path
@@ -242,7 +243,7 @@ def plot_percentage_below_zero(all_merged_dfs):
     return temp_below_zero_percentage, pivot_df
 
 # plot_percentage_below_zero(temp_merged_dfs)
-def plot_seasonal_diurnal_compact(font_scale=2.0):
+def plot_seasonal_diurnal_compact(font_scale=2.3):
     """
     Single figure with 4 rows × 4 columns.
     Columns = seasons (Winter, Pre-monsoon, Monsoon, Post-monsoon).
@@ -345,6 +346,8 @@ def plot_seasonal_diurnal_compact(font_scale=2.0):
     for season, pivot in heatmap_pivots.items():
         vmax = pivot.values[np.isfinite(pivot.values)].max() if pivot.size > 0 else 1.0
         clims[season] = (0, vmax)
+    clims['Post-monsoon'] = (0, 0.1)
+    clims['Winter'] = (0, 0.1)
     clims['Monsoon'] = (0, 1.0)
 
     # ── Inter-station Spearman r diurnal correlations ─────────────────────────
@@ -503,15 +506,15 @@ def plot_seasonal_diurnal_compact(font_scale=2.0):
         n_rows, n_cols,
         figsize=(22, 14),
         facecolor='white',
-        gridspec_kw={'hspace': 0.45, 'wspace': 0.38,
+        gridspec_kw={'hspace': 0.28, 'wspace': 0.50,
                      'height_ratios': [1.2, 0.9, 0.9]}
     )
 
     # Panel labels: unique per panel (row x col)
+    _all_labels = [f'({chr(ord("a") + i)})' for i in range(n_rows * n_cols)]
     panel_labels = {
-        (0, 0): '(a1)', (0, 1): '(a2)', (0, 2): '(a3)', (0, 3): '(a4)',
-        (1, 0): '(b1)', (1, 1): '(b2)', (1, 2): '(b3)', (1, 3): '(b4)',
-        (2, 0): '(c1)', (2, 1): '(c2)', (2, 2): '(c3)', (2, 3): '(c4)',
+        (r, c): _all_labels[r * n_cols + c]
+        for r in range(n_rows) for c in range(n_cols)
     }
 
     # Store twin axes for shared y-lim application later
@@ -530,16 +533,18 @@ def plot_seasonal_diurnal_compact(font_scale=2.0):
                 np.arange(-0.5, 24.5), np.arange(len(pivot) + 1),
                 pivot.values,
                 cmap='YlGnBu', vmin=vmin, vmax=vmax, shading='flat')
-            cbar_pad = 0.25 if is_monsoon else 0.02
-            cbar = fig.colorbar(im, ax=ax, pad=cbar_pad, fraction=0.046)
+            # Use inset colorbar axes so subplot widths remain identical.
+            cbar_x0 = 1.28 if is_monsoon else 1.02
+            cax = ax.inset_axes([cbar_x0, 0.0, 0.03, 1.0], transform=ax.transAxes)
+            cbar = fig.colorbar(im, cax=cax)
             cbar.set_label('mm/h', fontsize=FS_CBAR)
             cbar.ax.tick_params(labelsize=FS_CBAR)
             ytick_pos  = np.arange(len(pivot)) + 0.5
             ax.set_yticks(ytick_pos)
             if col_i == 0:
-                # Left side: show station name + elevation
+                # Left side: show station name only
                 ytick_lbls = [
-                    f"{elev_to_abbrev.get(int(round(e)), '?')}\n{int(e)} m"
+                    elev_to_abbrev.get(int(round(e)), '?')
                     for e in pivot.index
                 ]
                 ax.set_yticklabels(ytick_lbls, fontsize=FS_TICK)
@@ -572,8 +577,8 @@ def plot_seasonal_diurnal_compact(font_scale=2.0):
         ax.set_xlim(-0.5, 23.5)
         ax.grid(False)
         ax.set_title(season, fontsize=FS_TITLE, fontweight='bold', color='black', pad=4)
-        ax.text(0.01, 0.98, panel_labels[(0, col_i)], transform=ax.transAxes,
-                fontsize=FS_PANEL, fontweight='bold', va='top')
+        ax.text(1.02, -0.10, panel_labels[(0, col_i)], transform=ax.transAxes,
+            fontsize=FS_PANEL, fontweight='bold', va='top', ha='left', clip_on=False)
         _ht_marks = {'TB2': ' (\u2014)', 'PLU4': ' (- -)'}  # emdash / dashes
 
         # ── Row 1: Temperature + ELR ──────────────────────────────────────────
@@ -619,8 +624,8 @@ def plot_seasonal_diurnal_compact(font_scale=2.0):
             ax_elr.tick_params(axis='y', labelsize=FS_TICK)
         else:
             ax_elr.set_yticklabels([])
-        ax.text(0.01, 0.98, panel_labels[(1, col_i)], transform=ax.transAxes,
-                fontsize=FS_PANEL, fontweight='bold', va='top')
+        ax.text(1.02, -0.10, panel_labels[(1, col_i)], transform=ax.transAxes,
+            fontsize=FS_PANEL, fontweight='bold', va='top', ha='left', clip_on=False)
         # Legend in Monsoon column (b3 = col_i==3) lower right
         if is_monsoon:
             temp_handles = [
@@ -666,8 +671,8 @@ def plot_seasonal_diurnal_compact(font_scale=2.0):
             ax_mr.tick_params(axis='y', labelsize=FS_TICK)
         else:
             ax_mr.set_yticklabels([])
-        ax.text(0.01, 0.98, panel_labels[(2, col_i)], transform=ax.transAxes,
-                fontsize=FS_PANEL, fontweight='bold', va='top')
+        ax.text(1.02, -0.10, panel_labels[(2, col_i)], transform=ax.transAxes,
+            fontsize=FS_PANEL, fontweight='bold', va='top', ha='left', clip_on=False)
         # Legend in Monsoon column: RH/MR style only (station colors are figure-level).
         if is_monsoon:
             rh_mr_handles = [
@@ -695,7 +700,7 @@ def plot_seasonal_diurnal_compact(font_scale=2.0):
     fig.legend(handles=station_handles, loc='lower center', ncol=3, frameon=False,
                bbox_to_anchor=(0.5, 0.01), fontsize=FS_LEGEND * 1.5)
 
-    plt.tight_layout(rect=[0, 0.06, 1, 1])
+    plt.tight_layout(rect=[0, 0.06, 1, 1], h_pad=0.5)
     plt.show()
 
     # ── Station correlation figure: Monsoon only ──────────────────────────────
@@ -718,8 +723,8 @@ def plot_seasonal_diurnal_compact(font_scale=2.0):
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.tick_params(axis='y', labelsize=fs(8))
-    ax.text(0.01, 0.98, '(a)', transform=ax.transAxes,
-            fontsize=fs(10), fontweight='bold', va='top')
+    ax.text(1.02, -0.10, '(a)', transform=ax.transAxes,
+        fontsize=fs(10), fontweight='bold', va='top', ha='left', clip_on=False)
     ax.set_ylabel('Inter-station correlation (r) (Monsoon)', fontsize=fs(9))
     ax.legend(fontsize=fs(7.5), loc='lower right', framealpha=0.85)
 
@@ -752,14 +757,14 @@ def plot_seasonal_diurnal_compact(font_scale=2.0):
     ax_d.spines['top'].set_visible(False)
     ax_d.spines['right'].set_visible(False)
     ax_d.tick_params(axis='y', labelsize=fs(8))
-    ax_d.text(0.01, 0.98, '(b)', transform=ax_d.transAxes,
-              fontsize=fs(10), fontweight='bold', va='top')
+    ax_d.text(1.02, -0.10, '(b)', transform=ax_d.transAxes,
+              fontsize=fs(10), fontweight='bold', va='top', ha='left', clip_on=False)
     ax_d.legend(fontsize=fs(7.5), loc='upper center', bbox_to_anchor=(0.5, 1.0),
                 framealpha=0.85, handlelength=2.5, ncol=1)
 
     plt.tight_layout()
     plt.show()
-# plot_seasonal_diurnal_compact(font_scale=2.0)
+# plot_seasonal_diurnal_compact(font_scale=2.3)
 def plot_monsoon_peak_strength_no_panel_b(months=None, month_label='Monsoon',
                                           exclude_stations=None,
                                           peak_mode='range',
@@ -1141,7 +1146,6 @@ def plot_monsoon_peak_strength_no_panel_b(months=None, month_label='Monsoon',
     # fig.text(pos_c.x0 - 0.1 * pos_c.width, panel_y, '(c)',
     #          fontsize=int(11 * FS), fontweight='bold', va='top', ha='left')
     plt.show()
-
 def plot_monthly_climate_overview():
     """
     Combined monthly overview figure with 6 panels (2 rows × 3 columns):
@@ -1544,17 +1548,14 @@ def plot_monthly_climate_overview():
     plt.show()
     plt.rcParams.update(_prev_rc)   # don't leak Arial/size into other figures
     return fig
-
+plot_monthly_climate_overview()
 
 def plot_precip_august_may_comparison_with_slope_stations(STATION_ABBREV=STATION_ABBREV,
                                                           font_scale=1.5):
     """
-    Extended version of plot_precip_august_may_comparison() that includes
-    slope stations (TB3-TB5, PLU2/Yala BC AWS) as scatter points overlaid on the plot.
-    These stations are not part of the main profile line but are shown with
-    different markers and colors to distinguish them.
+    
 
-    Spatial visualization: how May (pre-monsoon) vs August (monsoon) daily
+    Spatial visualization: how May (pre-monsoon) vs monsoon daily
     precipitation is distributed along the valley profile.
     """
     plt.rcParams['font.family'] = 'Arial'
@@ -1596,11 +1597,7 @@ def plot_precip_august_may_comparison_with_slope_stations(STATION_ABBREV=STATION
         ('Daytime core',   [12, 13, 14, 15]),                     # 12–16
         ('Nighttime core', [21, 22, 23, 0]),                      # 21–01
     ]
-    MONTH_STYLE = {
-        'May':    dict(color='#e6a817', marker='D', ls='--', lw=2.0),
-        'August': dict(color='#1f6eb5', marker='o', ls='-',  lw=2.5),
-    }
-    MIN_COV         = 0.70
+    
     MIN_DAYS_PER_YR = 10
 
     # Font sizes, scalable via font_scale
@@ -1954,7 +1951,7 @@ def plot_precip_august_may_comparison_with_slope_stations(STATION_ABBREV=STATION
     plt.savefig('precip_comparison_with_slope_stations.png', dpi=300, bbox_inches='tight')
     print("Figure saved as 'precip_comparison_with_slope_stations.png'")
     plt.show()
-
+# plot_precip_august_may_comparison_with_slope_stations()
 def plot_seasonal_undercatch_summary_from_corrected():
     """
     Seasonal undercatch summary based on the saved Kochendorfer correction:
@@ -2597,7 +2594,6 @@ def plot_percentage_below_zero(all_merged_dfs):
     
     return temp_below_zero_percentage, pivot_df
 
-
 def plot_snowcover_albedo(font_scale=2.25):
     plt.rcParams['font.family'] = 'Arial'
 
@@ -2708,11 +2704,10 @@ def plot_snowcover_albedo(font_scale=2.25):
     fig.tight_layout()
     plt.show()
 
-
 def analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_scale=1.5, only_panel_a=False):
     """
     Analyzes how precipitation amount varies with temperature change (dT/dt)
-    using hourly data, for all seasons, and plots all seasons together in one figure.
+    using hourly data, for all seasons, and plots panel a only.
 
     Uses merged data from AWS and pluviometer stations:
     - Kyangjin AWS, Yala BC AWS
@@ -2725,7 +2720,7 @@ def analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_sca
     font_scale : float
         Font scaling factor.
     only_panel_a : bool
-        If True, only plot panel a (dT vs precipitation) and suppress panel annotations.
+        Kept for backward compatibility (panel a is always plotted).
     """
     year_round_stations = ['Kyangjin AWS', 'Yala BC AWS']
     pluvio_temp_stations = ['Morimoto Pluvio']
@@ -2783,55 +2778,6 @@ def analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_sca
         else:
             return 'Other'
 
-    def calculate_lcl_absolute(T, RH):
-        """Compute absolute LCL relative to ground observation from temperature (°C) and RH (%)."""
-        T0, Rv, L, eo = 273.15, 461.5, 2.5e6, 0.6113
-        e_s = eo * np.exp(17.2694 * T / (T + 243.5))
-        e = RH / 100.0 * e_s
-        e = np.where(e > 0, e, np.nan)
-        Td_K = 1 / (1 / T0 - (Rv / L) * np.log(e / eo))
-        Td = Td_K - 273.15
-        lcl_rel = 125 * (T - Td)
-        return lcl_rel
-
-    def compute_monthly_surface_lcl_by_station():
-        """Monthly mean surface LCL, grouped by month across all years."""
-        monthly_lcl = {}
-        try:
-            # TEMP/RH from the shipped humidity timeseries (no raw data needed)
-            _moist = pd.read_csv(
-                _DATA_DIR / 'Moisture' / 'Kyangjin_AWS_humidity_timeseries.csv',
-                index_col='DATETIME', parse_dates=True, na_values=['NA'])
-            _moist = _moist.rename(columns={'TAIR': 'TEMP'})
-            station_seasonal_data = {'Kyangjin AWS': _moist}
-        except Exception as e:
-            print(f"Error loading RH/TEMP data for LCL subplot: {e}")
-            return monthly_lcl
-
-        for station, df_station in station_seasonal_data.items():
-            if station != 'Kyangjin AWS':
-                continue
-            if 'TEMP' not in df_station.columns or 'RH' not in df_station.columns:
-                continue
-
-            T = pd.to_numeric(df_station['TEMP'], errors='coerce')
-            RH = pd.to_numeric(df_station['RH'], errors='coerce')
-            RH = RH.where((RH > 0) & (RH <= 100), other=np.nan)
-            lcl_abs = calculate_lcl_absolute(T.values, RH.values)
-
-            s_lcl_abs = pd.Series(lcl_abs, index=df_station.index)
-            s_lcl_abs = s_lcl_abs.where(s_lcl_abs > 0, other=np.nan)
-
-            df_lcl = pd.DataFrame(index=s_lcl_abs.index)
-            df_lcl['Surface_LCL'] = s_lcl_abs
-            df_lcl['Month'] = df_lcl.index.month
-
-            monthly_mean_surface_lcl = df_lcl['Surface_LCL'].groupby(df_lcl['Month']).mean()
-            if not monthly_mean_surface_lcl.dropna().empty:
-                monthly_lcl[station] = monthly_mean_surface_lcl
-
-        return monthly_lcl
-
     # Collect and merge all data for all stations
     # (temperature and precipitation both from the cleaned station files)
     all_data_list = []
@@ -2876,14 +2822,9 @@ def analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_sca
     # Plot all seasons together on one compact axis.
     FS_TICK   = 12.6  * font_scale
     FS_LABEL  = 14.4  * font_scale
-    FS_PANEL  = 16.2  * font_scale
     FS_LEGEND = 11.7  * font_scale
 
-    if only_panel_a:
-        _fig, ax = plt.subplots(1, 1, figsize=(8.5, 8), facecolor='white')
-        ax_lcl = None
-    else:
-        _fig, (ax, ax_lcl) = plt.subplots(1, 2, figsize=(17, 8), facecolor='white')
+    fig, ax = plt.subplots(1, 1, figsize=(8.5, 8), facecolor='white')
     season_binned = {}
     corr_summary = {}
     for season_name in season_names:
@@ -2935,9 +2876,6 @@ def analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_sca
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.yaxis.set_major_locator(plt.MaxNLocator(4))
-    if not only_panel_a:
-        ax.text(0.01, 0.98, 'a)', transform=ax.transAxes,
-                fontsize=FS_PANEL, fontweight='bold', va='top')
     if season_binned:
         y_max = max(v['mean'].max() for v in season_binned.values())
         if np.isfinite(y_max) and y_max > 0:
@@ -2955,38 +2893,7 @@ def analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_sca
         ax.text(0.5, 0.5, 'No data', transform=ax.transAxes,
                 ha='center', va='center', fontsize=FS_LABEL)
 
-    if not only_panel_a:
-        # Subplot B: Monthly mean surface LCL (all years, all stations).
-        monthly_lcl_by_station = compute_monthly_surface_lcl_by_station()
-        month_ticks = np.arange(1, 13)
-        month_labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-
-        if monthly_lcl_by_station:
-            for station, monthly_series in monthly_lcl_by_station.items():
-                ax_lcl.plot(
-                    monthly_series.index, monthly_series.values,
-                    marker='o', markersize=4.5, linewidth=1.5, alpha=0.90,
-                    label='Surface LCL PLU1', zorder=3
-                )
-            ax_lcl.legend(fontsize=FS_LEGEND - 1.0, loc='best', framealpha=0.90, edgecolor='grey')
-        else:
-            ax_lcl.text(0.5, 0.5, 'No data', transform=ax_lcl.transAxes,
-                        ha='center', va='center', fontsize=FS_LABEL)
-
-        ax_lcl.axhline(0, color='black', linewidth=0.9, linestyle=':', alpha=0.65, zorder=1)
-        ax_lcl.set_xlabel('Month', fontsize=FS_LABEL)
-        ax_lcl.set_ylabel('Surface LCL (m)', fontsize=FS_LABEL)
-        ax_lcl.set_xticks(month_ticks)
-        ax_lcl.set_xticklabels(month_labels)
-        ax_lcl.tick_params(axis='both', labelsize=FS_TICK)
-        ax_lcl.spines['top'].set_visible(False)
-        ax_lcl.spines['right'].set_visible(False)
-        ax_lcl.yaxis.set_major_locator(plt.MaxNLocator(4))
-        ax_lcl.text(0.01, 0.98, 'b)', transform=ax_lcl.transAxes,
-                    fontsize=FS_PANEL, fontweight='bold', va='top')
-
-    plt.tight_layout()
+    fig.tight_layout()
     plt.show()
 
     # Print summary
@@ -3000,6 +2907,8 @@ def analyze_precipitation_sensitivity_to_temperature_change_all_seasons(font_sca
         corr_str = f"{corr:.4f}" if not np.isnan(corr) else "N/A"
         print(f"{season_name:<20} {corr_str:<20}")
     return
+# analyze_precipitation_sensitivity_to_temperature_change_all_seasons()
+
 
 def plot_combined_snowfall_rainfall_analysis():
     """
@@ -3007,7 +2916,7 @@ def plot_combined_snowfall_rainfall_analysis():
       a) Mean monthly precipitation by elevation (heatmap, all stations)
       b) Daily precipitation intensity distribution – Kyangjin AWS (stacked bars, % of days)
       c) Mean monthly snowfall by elevation (heatmap, Pluvio/AWS stations)
-      d) Top-20 daily extreme events per station (cyclonic events shown as markers)
+      d) Top-20 daily extreme events per station (events shown as markers)
     """
     import matplotlib.dates as mdates
 
@@ -3041,7 +2950,7 @@ def plot_combined_snowfall_rainfall_analysis():
 
     elevation_map = {s: get_elevation([s])[0] for s in all_stations}
 
-    COV_THR, T_THR = 1.0, 1.0
+    COV_THR, T_THR = 0.96, 1.0 # Coverage threshold of 96% accounts for maintenance periods where no measurements are taken; T_THR is the physical snow/rain split (degC), not a coverage fraction
 
     # ── 2. Snowfall processing ────────────────────────────────────────────────
     snowfall_df = pd.DataFrame()
@@ -3064,17 +2973,26 @@ def plot_combined_snowfall_rainfall_analysis():
         ym = cov[cov >= COV_THR]
         if ym.empty:
             continue
-        # Require at least 3 qualifying year-months before monthly climatology
+        # Cheap early exit: skip stations with too little qualifying data overall
         if len(ym) < 3:
             continue
         d_ok = d.join(ym.rename('ok'), on=['Y', 'M'], how='inner').drop(columns='ok')
         d_ok['S'] = d_ok['R'].where(d_ok['T'] <= T_THR, other=0).fillna(0)
-        ms = d_ok.groupby(['Y', 'M'])['S'].sum().loc[ym.index].groupby('M').mean()
+        ms_yearly = d_ok.groupby(['Y', 'M'])['S'].sum().loc[ym.index]
+        # Require at least 3 qualifying years for THIS calendar month specifically,
+        # not just 3 qualifying year-months anywhere in the station's record
+        n_years_per_month = ms_yearly.groupby('M').size()
+        ms = ms_yearly.groupby('M').mean()
+        ms = ms[n_years_per_month >= 3]
         r = ms.reset_index(); r.columns = ['Month', 'Snowfall']; r['Elevation'] = elevation_map[station]
         snowfall_df = pd.concat([snowfall_df, r])
 
     # ── 3. Rainfall processing (tipping buckets) ────────────────────────────────────────────────
     rain_df = pd.DataFrame()
+    # TB1 (Syabru TB) / TB2 (Lama TB): very sparse records where the usual
+    # 3-year-minimum would drop nearly every month. Allow a single qualifying
+    # year for these two, still gated by the normal 50% monthly coverage (thr).
+    MIN_YEARS_EXCEPTION = {'Syabru TB': 1, 'Lama TB': 1}
     for station in rain_stations:
         df = all_merged_dfs.get(station)
         if df is None or df.empty:
@@ -3089,14 +3007,25 @@ def plot_combined_snowfall_rainfall_analysis():
         if 'TB' in station and 'T' in d.columns:
             d.loc[(d['T'] < 1) & (d['R'] == 0), 'R'] = np.nan
         d['Y'], d['M'] = d.index.year, d.index.month
-        thr = 0.5 if 'TB' in station else 1.0
+        thr = 0.5 if 'TB' in station else 0.96
+        min_years = MIN_YEARS_EXCEPTION.get(station, 3)
         cov = d.groupby(['Y', 'M'])['R'].apply(lambda x: x.notna().sum() / x.size if x.size else 0)
         ym = cov[cov >= thr]
         if ym.empty:
             continue
+        # Cheap early exit: skip stations with too little qualifying data overall
+        if len(ym) < min_years:
+            continue
         vy = ym.index.get_level_values(0).unique()
         sums = d[d['Y'].isin(vy)].groupby(['Y', 'M'])['R'].sum()
-        means = sums.loc[ym.index].groupby('M').mean().reset_index()
+        sums_qual = sums.loc[ym.index]
+        # Require at least min_years qualifying years for THIS calendar month
+        # specifically, not just min_years qualifying year-months anywhere in
+        # the station's record
+        n_years_per_month = sums_qual.groupby('M').size()
+        means = sums_qual.groupby('M').mean()
+        means = means[n_years_per_month >= min_years]
+        means = means.reset_index()
         means.columns = ['Month', 'R']; means['Elevation'] = elevation_map[station]
         rain_df = pd.concat([rain_df, means])
 
@@ -3151,27 +3080,47 @@ def plot_combined_snowfall_rainfall_analysis():
         if df is not None and not df.empty:
             data_dict[station] = df
 
+    rename_map = {
+        'Rainfall_1H': 'R',
+        'Rainfall_15min': 'R',
+        'Temperature_1H': 'T',
+        'Temperature': 'T',
+    }
+
     for station in extreme_stations:
-        if station not in data_dict:
+        station_df = data_dict.get(station)
+        if station_df is None:
             continue
-        df = data_dict[station].copy()
-        for o, n in [('Rainfall_1H', 'R'), ('Rainfall_15min', 'R'),
-                     ('Temperature_1H', 'T'), ('Temperature', 'T')]:
-            if o in df.columns:
-                df = df.rename(columns={o: n})
-        df['R'] = pd.to_numeric(df['R'] if 'R' in df.columns else pd.Series(dtype=float), errors='coerce')
-        df['T'] = pd.to_numeric(df['T'] if 'T' in df.columns else pd.Series(dtype=float), errors='coerce')
-        df['S'] = np.where((df['T'] <= 1.0) & (df['R'] > 0), df['R'], 0)
-        dv = df['R'].notna().resample('D').max().astype(bool)
-        grps = (dv != dv.shift()).cumsum()
-        vg = dv[dv].groupby(grps[dv])
-        if vg.ngroups > 0:
-            meas_periods[station] = (vg.apply(lambda x: x.index[0]),
-                                     vg.apply(lambda x: x.index[-1]))
-        dagg = df.resample('D').agg({'R': 'sum', 'S': 'sum'})
-        for date, val in dagg['R'].nlargest(20).items():
-            snow_val = df.loc[date:date + pd.Timedelta(days=1) - pd.Timedelta(seconds=1), 'S'].sum()
-            all_extremes.append({'Date': date, 'Precip': val, 'Snow': snow_val, 'Station': station})
+
+        df = station_df.copy().rename(columns=rename_map)
+
+        for col in ['R', 'T']:
+            if col not in df.columns:
+                df[col] = np.nan
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # A day is considered a snow event when the event-day mean temperature is below 1°C.
+        daily_has_obs = df['R'].notna().resample('D').max().astype(bool)
+        event_groups = (daily_has_obs != daily_has_obs.shift()).cumsum()
+        valid_events = daily_has_obs[daily_has_obs].groupby(event_groups[daily_has_obs])
+
+        if valid_events.ngroups > 0:
+            meas_periods[station] = (
+                valid_events.apply(lambda x: x.index[0]),
+                valid_events.apply(lambda x: x.index[-1]),
+            )
+
+        daily = df.resample('D').agg({'R': 'sum'})
+        daily_t_mean = df['T'].resample('D').mean().reindex(daily.index)
+        daily['S'] = np.where(daily_t_mean < 1.0, daily['R'], 0.0)
+
+        for date, precip in daily['R'].nlargest(20).items():
+            all_extremes.append({
+                'Date': date,
+                'Precip': precip,
+                'Snow': daily.at[date, 'S'],
+                'Station': station,
+            })
 
     # ── Calculate annual totals for pluviometers ──────────────────────────────
     pluvio_stations = [s for s in rain_stations if 'Pluvio' in s or 'AWS' in s]
@@ -3420,4 +3369,212 @@ def plot_combined_snowfall_rainfall_analysis():
 
     plt.show()
     return fig2
+
+
+def combine_and_plot_monthly_wind_data_updown(font_scale=1.5,
+                                              fontsize_title=13,
+                                              fontsize_label=12,
+                                              fontsize_ticks=11,
+                                              fontsize_legend=11):
+    """
+    3-station wind climatology, upslope/downslope only. Per-station row:
+      (col 0) Diurnal × monthly slope-flow heatmap (month vs hour,
+              prevailing flow classified as upslope or downslope).
+      (col 1) Diurnal × monthly speed heatmap (month vs hour, YlOrRd).
+    Same formatting as combine_and_plot_monthly_wind_data_daynight.
+
+    Args:
+        font_scale (float): Multiplier applied to all font sizes.
+        fontsize_title (int): Titles and (a)–(f) panel letters.
+        fontsize_label (int): Axis and colorbar labels.
+        fontsize_ticks (int): Tick labels (months, hours, colorbars).
+        fontsize_legend (int): Shading legend at the bottom.
+    """
+    FS_TITLE  = fontsize_title  * font_scale
+    FS_LABEL  = fontsize_label  * font_scale
+    FS_TICK   = fontsize_ticks  * font_scale
+    FS_LEGEND = fontsize_legend * font_scale
+    import matplotlib.gridspec as gridspec
+    from matplotlib.patches import Patch
+
+    # ── Load data ────────────────────────────────────────────────────
+    # All three stations go through the same cleaning pipeline
+    # (get_aws_df_wind, clean_wind.py) rather than loading Morimoto MM
+    # separately from the raw MicroMet file - it gets the same out-of-range
+    # filtering, gap-filling, and 15-min-to-hourly resampling as the two
+    # AWS stations.
+    try:
+        all_data = get_aws_df_wind(Station=['Kyangjin AWS', 'Yala BC AWS', 'Morimoto MM'])
+    except Exception as e:
+        print(f"Error fetching wind data: {e}")
+        all_data = {}
+
+    desired_order   = ['Morimoto MM', 'Yala BC AWS', 'Kyangjin AWS']
+    STATION_LABELS  = {
+        'Morimoto MM':  'PLU3 (4919 m)',
+        'Yala BC AWS':  'PLU2 (5090 m)',
+        'Kyangjin AWS': 'PLU1 (3862 m)',
+    }
+    stations_to_plot = [s for s in desired_order if s in all_data]
+    n_st = len(stations_to_plot)
+    if n_st == 0:
+        print("No wind data available.")
+        return
+
+    MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun',
+                    'Jul','Aug','Sep','Oct','Nov','Dec']
+    MONTHS = np.arange(1, 13)
+
+    # Upslope / downslope direction mapping per station
+    # Key: list of the 4 sector names that are 'upslope' for that station
+    SLOPE_INFO = {
+        'Kyangjin AWS': {'upslope': ['W', 'S'],   'downslope': ['E', 'N']},
+        'Yala BC AWS':  {'upslope': ['SW', 'SE'], 'downslope': ['NW', 'NE']},
+        'Morimoto MM':  {'upslope': ['E', 'S'],   'downslope': ['N', 'W']},
+    }
+
+    # ── Figure ───────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(10, 7.5 * n_st))
+    gs  = gridspec.GridSpec(n_st, 2, figure=fig)
+
+    panel_letters = ['a','b','c','d','e','f']
+
+    for row_idx, station in enumerate(stations_to_plot):
+        df       = all_data[station].copy()
+        df['Month'] = df.index.month
+        df['Hour']  = df.index.hour
+        df_valid = df.dropna(subset=['WINDDIR','WSPD'])
+        df_valid = df_valid[np.isfinite(df_valid['WINDDIR']) & np.isfinite(df_valid['WSPD'])]
+
+        ax_dir = fig.add_subplot(gs[row_idx, 0])
+
+        # ── (col 0) Diurnal × monthly slope-flow heatmap ─────────────
+        # Observations are binned into the station's 4 direction sectors
+        # (Yala BC uses 45°-shifted intercardinal sectors) and mapped to
+        # upslope/downslope via SLOPE_INFO. Two discrete shades per class:
+        # full colour = clear prevailing flow (dominant class ≥ 2/3 of
+        # observations in the month-hour cell), light = no clear flow.
+        if station == 'Yala BC AWS':
+            _SECTOR_NAMES = ['NE', 'SE', 'SW', 'NW']
+            _DEG_OFFSET   = 0    # NE (0–90) → 0, SE → 1, SW → 2, NW → 3
+        else:
+            _SECTOR_NAMES = ['N', 'E', 'S', 'W']
+            _DEG_OFFSET   = 45   # N (315–45) → 0, E → 1, S → 2, W → 3
+        _slope = SLOPE_INFO.get(station, {})
+        _up    = _slope.get('upslope',   [])
+        # sector index → class: 0 = downslope, 1 = upslope
+        _sec_to_class = np.array([1 if _n in _up else 0 for _n in _SECTOR_NAMES])
+        _BASE_RGB = {
+            0: np.array([  0, 114, 178]) / 255,  # downslope — blue
+            1: np.array([213,  94,   0]) / 255,  # upslope — vermillion
+        }
+        _CLEAR_FRAC = 2 / 3                      # two-thirds majority = clear
+        _SHADE_T = [0.40, 1.00]                  # light = no clear, full = clear
+        _WHITE = np.ones(3)
+        _class_colors = [_WHITE * (1 - t) + _BASE_RGB[s] * t
+                         for s in range(2) for t in _SHADE_T]
+
+        dir_grid = np.full((24, 12), np.nan)     # class index 0–3
+        for m in range(1, 13):
+            for h in range(24):
+                sub = df_valid[(df_valid['Month'] == m) & (df_valid['Hour'] == h)]
+                if len(sub) >= 3:
+                    sectors = ((sub['WINDDIR'].values + _DEG_OFFSET) % 360 // 90).astype(int)
+                    classes = _sec_to_class[sectors]
+                    counts  = np.bincount(classes, minlength=2)
+                    dom     = int(counts.argmax())
+                    frac    = counts[dom] / counts.sum()
+                    dir_grid[h, m-1] = dom * 2 + int(frac >= _CLEAR_FRAC)
+
+        from matplotlib.colors import ListedColormap, BoundaryNorm
+        from matplotlib.cm import ScalarMappable
+        _cmap_sec = ListedColormap(_class_colors)
+        _cmap_sec.set_bad('0.6')                 # grey = no data
+        _norm_sec = BoundaryNorm(np.arange(-0.5, 4.5), ncolors=4)
+        im_dir = ax_dir.pcolormesh(np.arange(0.5, 13.5), np.arange(-0.5, 24.5),
+                                   np.ma.masked_invalid(dir_grid),
+                                   cmap=_cmap_sec, norm=_norm_sec, shading='auto', zorder=1)
+
+        # Hue legend: separate 2-block colourbar with the full class colours
+        # (shading has its own shared legend at the bottom of the figure)
+        _tick_labels = ['↓ Downslope', '↑ Upslope']
+        _cmap_hue = ListedColormap([_BASE_RGB[s] for s in range(2)])
+        _norm_hue = BoundaryNorm(np.arange(-0.5, 2.5), ncolors=2)
+        _sm_hue   = ScalarMappable(norm=_norm_hue, cmap=_cmap_hue)
+        _sm_hue.set_array([])
+        cb = plt.colorbar(_sm_hue, ax=ax_dir, pad=0.03, shrink=0.95,
+                          ticks=np.arange(2))
+        # Alignment passed as kwargs so it survives redraws: flush left
+        # edge, vertically centred on each colour block
+        cb.ax.set_yticklabels(_tick_labels, fontsize=FS_TICK,
+                              ha='left', va='center')
+        # cb.set_label('Prevailing flow', fontsize=FS_LABEL)
+        # Pin the label x-position (in colorbar-axes widths) so it sits at
+        # the same spot on every row regardless of tick-label width
+        cb.ax.yaxis.set_label_coords(16, 0.5)
+        ax_dir.set_xticks(MONTHS)
+        if row_idx == n_st - 1:
+            ax_dir.set_xticklabels(MONTH_LABELS, fontsize=FS_TICK, rotation=90)
+        else:
+            ax_dir.set_xticklabels([])
+        ax_dir.set_yticks([0, 6, 12, 18, 23])
+        ax_dir.set_yticklabels(['00:00','06:00','12:00','18:00','23:00'], fontsize=FS_TICK)
+        ax_dir.set_ylabel('Hour', fontsize=FS_LABEL)
+        # if row_idx == 0:
+            # ax_dir.set_title(f'Prevailing hourly wind direction\n{STATION_LABELS.get(station, station)}', fontsize=FS_TITLE)
+        # else:
+        ax_dir.set_title(STATION_LABELS.get(station, station), fontsize=FS_TITLE)
+        ax_dir.set_xlim(0.5, 12.5); ax_dir.set_ylim(-0.5, 23.5)
+        ax_dir.axhspan(18.5, 23.5, color='cornflowerblue', alpha=0.18, zorder=0)
+        ax_dir.axhspan(-0.5,  6.5, color='cornflowerblue', alpha=0.18, zorder=0)
+        ax_dir.text(0.02, 0.97, f'({panel_letters[row_idx*2]})',
+                    transform=ax_dir.transAxes, fontsize=FS_TITLE, fontweight='bold',
+                    va='top', ha='left')
+
+        # ── (col 1) Diurnal × monthly speed heatmap ──────────────
+        ax_spd = fig.add_subplot(gs[row_idx, 1])
+        spd_grid = np.full((24, 12), np.nan)
+        for m in range(1, 13):
+            for h in range(24):
+                sub = df_valid[(df_valid['Month'] == m) & (df_valid['Hour'] == h)]
+                if len(sub) >= 3:
+                    spd_grid[h, m-1] = sub['WSPD'].mean()
+
+        im_spd = ax_spd.pcolormesh(np.arange(0.5, 13.5), np.arange(-0.5, 24.5),
+                                   spd_grid, cmap='YlOrRd', vmin=0, vmax=7, shading='auto')
+        cb2 = plt.colorbar(im_spd, ax=ax_spd, pad=0.03, shrink=0.95)
+        cb2.set_label('Speed (m$^{-1}$)', fontsize=FS_LABEL)
+        cb2.ax.tick_params(labelsize=FS_TICK)
+        ax_spd.set_xticks(MONTHS)
+        if row_idx == n_st - 1:
+            ax_spd.set_xticklabels(MONTH_LABELS, fontsize=FS_TICK, rotation=90)
+        else:
+            ax_spd.set_xticklabels([])
+        ax_spd.set_yticks([0, 6, 12, 18, 23])
+        ax_spd.set_yticklabels(['00:00','06:00','12:00','18:00','23:00'], fontsize=FS_TICK)
+        ax_spd.set_ylabel('Hour', fontsize=FS_LABEL)
+            # ax_spd.set_title(f'Mean hourly wind speed\n{STATION_LABELS.get(station, station)}', fontsize=FS_TITLE)
+        ax_spd.set_title(STATION_LABELS.get(station, station), fontsize=FS_TITLE)
+        ax_spd.set_xlim(0.5, 12.5); ax_spd.set_ylim(-0.5, 23.5)
+        ax_spd.axhspan(18.5, 23.5, color='cornflowerblue', alpha=0.18, zorder=0)
+        ax_spd.axhspan(-0.5,  6.5, color='cornflowerblue', alpha=0.18, zorder=0)
+        ax_spd.text(0.02, 0.97, f'({panel_letters[row_idx*2+1]})',
+                    transform=ax_spd.transAxes, fontsize=FS_TITLE, fontweight='bold',
+                    va='top', ha='left')
+
+    # Shared shading legend under the slope-flow panels.
+    # Grey tones: the shading applies to both hues.
+    _shade_handles = [
+        Patch(facecolor='0.25', label='Clear prevailing flow (≥ 67%)'),
+        Patch(facecolor='0.82', label='No clear flow (< 67%)'),
+    ]
+    fig.legend(handles=_shade_handles, loc='lower left',
+               bbox_to_anchor=(0.05, 0.0), ncol=2,
+               fontsize=FS_LEGEND, frameon=False)
+
+    # Reserve room at the bottom for the one-row legend so it clears the
+    # rotated month tick labels of the last row (scales with the fonts)
+    _legend_frac = (0.5 * max(font_scale, 1.0)) / (7.5 * n_st)
+    plt.tight_layout(rect=[0, _legend_frac, 1, 0.96])
+    plt.show()
 
