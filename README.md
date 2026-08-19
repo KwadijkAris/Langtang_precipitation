@@ -4,6 +4,8 @@ Code repository for the data cleaning, merging, correction, and figure-generatio
 
 Copyright (c) 2026 A. Kwadijk, Utrecht University. Licensed under CC BY 4.0.
 
+
+
 ## Repository Layout
 
 This folder contains the Python code. The scripts expect the Zenodo-style directory layout:
@@ -54,13 +56,13 @@ The processing chain is organized around individual cleaning scripts, merge scri
 - `clean_temperature.py` loads and cleans temperature records from TB, pluviometer, AWS, and SNOWAMP stations.
 - `clean_wind.py` cleans wind speed and wind direction records.
 - `clean_RH.py` cleans relative humidity records.
-- `clean_pressure.py` cleans pressure records.
+- `clean_pressure.py` cleans atmospheric pressure records.
 - `clean_SW_LW.py` cleans hourly shortwave and longwave radiation records for Kyangjin AWS and Yala BC AWS.
 - `generate_humidity_timeseries.py` derives dew point, vapor pressure, mixing ratio, absolute humidity, specific humidity, and saturation specific humidity.
 - `lapse_rate_isotherm.py` computes lapse rate and zero/one-degree isotherm elevation products.
 - `valley_geometry.py` derives valley geometry products from the DEM.
 
-### Merge Scripts
+### Merge Scripts (optional)
 
 - `merge_temperature.py` writes per-station cleaned temperature files, `data/Merged/merged_temperature.csv`, and `data/Cleaned/Temperature/temp_merged_dfs.pkl`.
 - `merge_precipitation.py` writes `data/Merged/merged_precipitation.csv`. The current default station list includes corrected/AWS precipitation for `Kyangjin AWS`, `Yala BC AWS`, `Langshisha Pluvio`, and `Morimoto Pluvio`, plus the tipping-bucket stations. `Ganja La Pluvio`, `Yala Pluvio`, and `snowAMP Ganja La` are no longer part of the default merged precipitation output.
@@ -92,8 +94,7 @@ Regenerate pluvio/AWS precipitation cleaning outputs:
 ```bash
 python pluvio_cleaned_precip.py
 ```
-
-This regenerates the default cleaned pluviometer outputs for Langshisha and Morimoto. To process another pluviometer station, call `get_Pluvio_rain(station='<station name>', update_csv=True)` from Python.
+This regenerates the default cleaned pluviometer outputs for Langshisha and Morimoto.
 
 Regenerate Kochendorfer-corrected precipitation:
 
@@ -143,4 +144,3 @@ Depending on which scripts are run, outputs are written under:
 - `results/`
 - `results_testing/`
 
-The file `precip_comparison_with_slope_stations.png` is a generated plot output from `wrapperv3.py`.
