@@ -127,9 +127,6 @@ python merge_temperature.py
 
 `testing_function.py` is the most complete executable description of the dependency order. It backs up shipped derived data to `../testing_backup/` before overwriting selected derived products. It also notes two important reproducibility details:
 
-- tipping-bucket cleaning is executed but not written during the full test run; shipped files in `data/Cleaned/TB` remain authoritative;
-- wind cleaning is executed but not written during the full test run; shipped files in `data/Cleaned/Wind` remain authoritative.
-
 The full run requires raw sensor data under `data/raw/`. See `data/raw/README.txt` in the Zenodo data package for raw-data availability notes.
 
 ## Generated Files
