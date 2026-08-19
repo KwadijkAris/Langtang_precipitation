@@ -1,4 +1,4 @@
-# Readme
+# README
 
 Code repository for the data cleaning, merging, correction, and figure-generation workflow used in Kwadijk et al. (2026). The scripts process precipitation, temperature, humidity, radiation, pressure, wind, lapse-rate/isotherm, and valley-geometry data for the Langtang Valley station network.
 
